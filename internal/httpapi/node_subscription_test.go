@@ -1,0 +1,248 @@
+package httpapi_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+	"time"
+
+	appcrypto "github.com/WAY29/SimplePool/internal/crypto"
+	"github.com/WAY29/SimplePool/internal/group"
+	"github.com/WAY29/SimplePool/internal/httpapi"
+	"github.com/WAY29/SimplePool/internal/node"
+	"github.com/WAY29/SimplePool/internal/store/sqlite"
+	"github.com/WAY29/SimplePool/internal/subscription"
+)
+
+func TestNodeAndSubscriptionRoutes(t *testing.T) {
+	router, token := newProtectedRouter(t)
+
+	createNodeResp := performJSON(t, router, http.MethodPost, "/api/nodes", token, map[string]any{
+		"name":             "HK-A",
+		"protocol":         "vmess",
+		"server":           "1.1.1.1",
+		"server_port":      443,
+		"transport_json":   `{"network":"tcp"}`,
+		"tls_json":         `{"enabled":true}`,
+		"raw_payload_json": `{"uuid":"u-1"}`,
+		"credential":       `{"uuid":"u-1"}`,
+	})
+	if createNodeResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/nodes status = %d, want 201", createNodeResp.Code)
+	}
+
+	var createdNode map[string]any
+	_ = json.Unmarshal(createNodeResp.Body.Bytes(), &createdNode)
+	nodeID := createdNode["id"].(string)
+
+	listNodesResp := perform(t, router, http.MethodGet, "/api/nodes", token, nil)
+	if listNodesResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/nodes status = %d, want 200", listNodesResp.Code)
+	}
+
+	getNodeResp := perform(t, router, http.MethodGet, "/api/nodes/"+nodeID, token, nil)
+	if getNodeResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/nodes/:id status = %d, want 200", getNodeResp.Code)
+	}
+
+	updateNodeResp := performJSON(t, router, http.MethodPut, "/api/nodes/"+nodeID, token, map[string]any{
+		"name":             "HK-B",
+		"protocol":         "vmess",
+		"server":           "2.2.2.2",
+		"server_port":      8443,
+		"enabled":          false,
+		"transport_json":   `{"network":"ws"}`,
+		"tls_json":         `{"enabled":true}`,
+		"raw_payload_json": `{"uuid":"u-2"}`,
+		"credential":       `{"uuid":"u-2"}`,
+	})
+	if updateNodeResp.Code != http.StatusOK {
+		t.Fatalf("PUT /api/nodes/:id status = %d, want 200", updateNodeResp.Code)
+	}
+
+	importResp := performJSON(t, router, http.MethodPost, "/api/nodes/import", token, map[string]any{
+		"payload": "trojan://pass@example.com:443?security=tls#TR-1",
+	})
+	if importResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/nodes/import status = %d, want 201", importResp.Code)
+	}
+
+	probeNodeResp := performJSON(t, router, http.MethodPost, "/api/nodes/"+nodeID+"/probe", token, map[string]any{
+		"force": true,
+	})
+	if probeNodeResp.Code != http.StatusOK {
+		t.Fatalf("POST /api/nodes/:id/probe status = %d, want 200", probeNodeResp.Code)
+	}
+
+	probeBatchResp := performJSON(t, router, http.MethodPost, "/api/nodes/probe", token, map[string]any{
+		"ids":   []string{nodeID},
+		"force": true,
+	})
+	if probeBatchResp.Code != http.StatusOK {
+		t.Fatalf("POST /api/nodes/probe status = %d, want 200", probeBatchResp.Code)
+	}
+
+	createSubResp := performJSON(t, router, http.MethodPost, "/api/subscriptions", token, map[string]any{
+		"name": "sub-a",
+		"url":  "https://example.com/sub.txt",
+	})
+	if createSubResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/subscriptions status = %d, want 201", createSubResp.Code)
+	}
+
+	var createdSub map[string]any
+	_ = json.Unmarshal(createSubResp.Body.Bytes(), &createdSub)
+	subID := createdSub["id"].(string)
+
+	listSubResp := perform(t, router, http.MethodGet, "/api/subscriptions", token, nil)
+	if listSubResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/subscriptions status = %d, want 200", listSubResp.Code)
+	}
+
+	updateSubResp := performJSON(t, router, http.MethodPut, "/api/subscriptions/"+subID, token, map[string]any{
+		"name":    "sub-b",
+		"url":     "https://example.com/sub2.txt",
+		"enabled": false,
+	})
+	if updateSubResp.Code != http.StatusOK {
+		t.Fatalf("PUT /api/subscriptions/:id status = %d, want 200", updateSubResp.Code)
+	}
+
+	refreshSubResp := performJSON(t, router, http.MethodPost, "/api/subscriptions/"+subID+"/refresh", token, map[string]any{
+		"force": true,
+	})
+	if refreshSubResp.Code != http.StatusOK {
+		t.Fatalf("POST /api/subscriptions/:id/refresh status = %d, want 200", refreshSubResp.Code)
+	}
+
+	deleteNodeResp := perform(t, router, http.MethodDelete, "/api/nodes/"+nodeID, token, nil)
+	if deleteNodeResp.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/nodes/:id status = %d, want 204", deleteNodeResp.Code)
+	}
+
+	deleteSubResp := perform(t, router, http.MethodDelete, "/api/subscriptions/"+subID, token, nil)
+	if deleteSubResp.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/subscriptions/:id status = %d, want 204", deleteSubResp.Code)
+	}
+}
+
+func newProtectedRouter(t *testing.T) (http.Handler, string) {
+	t.Helper()
+
+	db, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "node-sub-http.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	if err := sqlite.Migrate(context.Background(), db); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	repos := sqlite.NewRepositories(db)
+	now := func() time.Time {
+		return time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
+	}
+	authService, token, err := buildAuthServiceForHTTPTests(repos, now)
+	if err != nil {
+		t.Fatalf("buildAuthServiceForHTTPTests() error = %v", err)
+	}
+
+	cipher, err := appcrypto.NewAESGCM(make([]byte, 32))
+	if err != nil {
+		t.Fatalf("NewAESGCM() error = %v", err)
+	}
+
+	prober := &httpFakeProber{}
+	nodeService := node.NewService(node.Options{
+		Nodes:          repos.Nodes,
+		LatencySamples: repos.LatencySamples,
+		Cipher:         cipher,
+		Prober:         prober,
+		Now:            now,
+		ProbeCacheTTL:  30 * time.Second,
+	})
+	subscriptionService := subscription.NewService(subscription.Options{
+		SubscriptionSources: repos.SubscriptionSources,
+		Nodes:               repos.Nodes,
+		LatencySamples:      repos.LatencySamples,
+		Cipher:              cipher,
+		Fetcher: &httpFakeFetcher{
+			payload: "trojan://pass@example.com:443?security=tls#TR-1",
+		},
+		Prober:        prober,
+		Now:           now,
+		ProbeCacheTTL: 30 * time.Second,
+	})
+	groupService := group.NewService(group.Options{
+		Groups: repos.Groups,
+		Nodes:  repos.Nodes,
+		Now:    now,
+	})
+	tunnelService := buildTunnelServiceForHTTPTests(repos, cipher, now, t.TempDir())
+	if err := seedTunnelFixturesForHTTPTests(repos, cipher); err != nil {
+		t.Fatalf("seedTunnelFixturesForHTTPTests() error = %v", err)
+	}
+
+	router := httpapi.NewRouter(httpapi.Options{
+		AuthService:         authService,
+		GroupService:        groupService,
+		NodeService:         nodeService,
+		SubscriptionService: subscriptionService,
+		TunnelService:       tunnelService,
+	})
+
+	return router, token
+}
+
+func performJSON(t *testing.T, handler http.Handler, method, path, token string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return perform(t, handler, method, path, token, data)
+}
+
+func perform(t *testing.T, handler http.Handler, method, path, token string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		reader = bytes.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	return resp
+}
+
+type httpFakeProber struct{}
+
+func (p *httpFakeProber) Probe(ctx context.Context, target node.ProbeTarget) (node.ProbeResult, error) {
+	return node.ProbeResult{
+		Success:   true,
+		LatencyMS: 66,
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+	}, nil
+}
+
+type httpFakeFetcher struct {
+	payload string
+}
+
+func (f *httpFakeFetcher) Fetch(ctx context.Context, request subscription.FetchRequest) ([]byte, error) {
+	return []byte(f.payload), nil
+}

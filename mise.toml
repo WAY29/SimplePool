@@ -1,0 +1,76 @@
+[tasks.api]
+description = "启动后端 API"
+depends = ["web:build"]
+run = "go run ./cmd/simplepool-api"
+
+[tasks.fmt]
+description = "格式化 Go 代码"
+run = "go fmt ./..."
+
+[tasks."fmt:check"]
+description = "检查 Go 代码格式"
+run = '''
+set -eu
+files="$(rg --files -g '*.go')"
+if [ -z "$files" ]; then
+  exit 0
+fi
+out="$(gofmt -l $files)"
+if [ -n "$out" ]; then
+  printf "%s\n" "$out"
+  exit 1
+fi
+'''
+
+[tasks.vet]
+description = "运行 Go 静态检查"
+run = "go vet ./..."
+
+[tasks.test]
+description = "运行 Go 单元测试"
+run = "go test ./..."
+
+[tasks."web:typecheck"]
+description = "运行前端类型检查"
+run = "npm --prefix web run typecheck"
+
+[tasks."web:build"]
+description = "构建前端"
+sources = [
+  "web/index.html",
+  "web/package.json",
+  "web/package-lock.json",
+  "web/tsconfig.json",
+  "web/tsconfig.app.json",
+  "web/tsconfig.node.json",
+  "web/vite.config.js",
+  "web/vite.config.ts",
+  "web/src/**/*",
+]
+outputs = [
+  "internal/httpapi/webui/dist/index.html",
+  "internal/httpapi/webui/dist/assets",
+]
+run = '''
+set -eu
+if [ ! -d web/node_modules ]; then
+  printf '%s\n' 'web:build 失败: web/node_modules 不存在，请先执行 npm --prefix web install'
+  exit 1
+fi
+npm --prefix web run build
+'''
+
+[tasks."web:check"]
+description = "按需执行前端类型检查"
+run = '''
+set -eu
+if [ ! -d web/node_modules ]; then
+  printf '%s\n' 'skip web:typecheck: web/node_modules 不存在'
+  exit 0
+fi
+npm --prefix web run typecheck
+'''
+
+[tasks.check]
+description = "工程自检"
+depends = ["fmt:check", "vet", "test", "web:check"]

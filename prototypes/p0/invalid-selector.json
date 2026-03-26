@@ -1,0 +1,22 @@
+{
+  "inbounds": [
+    {
+      "type": "http",
+      "tag": "http-in",
+      "listen": "127.0.0.1",
+      "listen_port": "bad-port"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "tunnel-selector",
+      "outbounds": [
+        "missing-node"
+      ]
+    }
+  ],
+  "route": {
+    "final": "tunnel-selector"
+  }
+}

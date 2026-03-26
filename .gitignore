@@ -1,0 +1,9 @@
+.simplepool/
+web/node_modules/
+web/dist/
+internal/httpapi/webui/dist/
+*.db
+*.db-shm
+*.db-wal
+coverage.out
+.env

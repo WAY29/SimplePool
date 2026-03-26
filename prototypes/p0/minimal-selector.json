@@ -1,0 +1,41 @@
+{
+  "log": {
+    "level": "debug"
+  },
+  "inbounds": [
+    {
+      "type": "http",
+      "tag": "http-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "tunnel-selector",
+      "outbounds": [
+        "node-direct",
+        "node-block"
+      ],
+      "default": "node-direct"
+    },
+    {
+      "type": "direct",
+      "tag": "node-direct"
+    },
+    {
+      "type": "block",
+      "tag": "node-block"
+    }
+  ],
+  "route": {
+    "final": "tunnel-selector"
+  },
+  "experimental": {
+    "clash_api": {
+      "external_controller": "127.0.0.1:19090",
+      "secret": "simplepool-p0-secret"
+    }
+  }
+}
