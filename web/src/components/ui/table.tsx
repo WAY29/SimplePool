@@ -7,7 +7,7 @@ export function Table({
   className?: string;
   children: React.ReactNode;
 }) {
-  return <div className={cn("overflow-hidden rounded-[24px] border border-white/10", className)}>{children}</div>;
+  return <div className={cn("overflow-hidden rounded-[6px] border border-white/10", className)}>{children}</div>;
 }
 
 export function TableElement({

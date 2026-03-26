@@ -553,7 +553,7 @@ export function WorkspacePage() {
                 <div>
                   <h2 className="text-2xl font-semibold text-white">组成员节点</h2>
                   <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                    当前分组命中的节点支持网格视图与表格视图切换，两种展示方式与节点页保持统一。
+                    当前分组命中的节点支持网格视图与列表视图切换，两种展示方式与节点页保持统一。
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">

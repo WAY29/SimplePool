@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useState } from "react";
-import { Cable, Download, LoaderCircle, Plus, Radar, Trash2 } from "lucide-react";
+import { Cable, Download, LoaderCircle, Radar, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { AppShell, EmptyState, PanelTitle } from "@/components/layout/app-shell";
+import { AppShell, EmptyState } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,7 +10,6 @@ import {
   formatNodeSource,
   nodeMetricValue,
 } from "@/components/nodes/node-collection-view";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -24,8 +23,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { usePersistedViewMode } from "@/hooks/use-persisted-view-mode";
 import { api, type NodeView, type ProbeBatchResult } from "@/lib/api";
-import { formatDateTime, formatLatency, formatNodeStatus, nodeStatusTone } from "@/lib/format";
+import { formatDateTime, formatNodeStatus, nodeStatusTone } from "@/lib/format";
 import { hasErrors, type NodeFormValues, validateNodeForm } from "@/lib/forms";
+import { cn } from "@/lib/utils";
 import { useAuthorizedRequest } from "@/hooks/use-authorized-request";
 import { useShellMetrics } from "@/hooks/use-shell-metrics";
 
@@ -64,7 +64,7 @@ export function NodesPage() {
     try {
       const data = await run((token) => api.nodes.list(token));
       setItems(data);
-      setSelected((current) => data.find((item) => item.id === current?.id) ?? data[0] ?? null);
+      setSelected((current) => (current ? data.find((item) => item.id === current.id) ?? null : null));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "节点列表加载失败");
     } finally {
@@ -83,15 +83,8 @@ export function NodesPage() {
         [item.name, item.protocol, item.server, item.source_kind].join(" ").toLowerCase().includes(keyword),
       );
   const healthyCount = items.filter((item) => item.enabled && item.last_status === "healthy").length;
-  const unreachableCount = items.filter((item) => item.last_status === "unreachable").length;
+  const unavailableCount = items.filter((item) => !item.enabled || item.last_status === "unreachable").length;
   const enabledCount = items.filter((item) => item.enabled).length;
-
-  function openCreate() {
-    setEditing(null);
-    setForm(defaultNodeForm);
-    setErrors({});
-    setShowForm(true);
-  }
 
   function openEdit(item: NodeView) {
     setEditing(item);
@@ -234,104 +227,98 @@ export function NodesPage() {
   return (
     <AppShell>
       <div className="grid gap-4">
-        <Card className="overflow-hidden">
-          <CardHeader className="gap-5">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-              <div className="space-y-4">
-                <PanelTitle eyebrow="Nodes" title="节点池"/>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <MetaCard label="节点总数" value={`${items.length}`} />
-                  <MetaCard label="可用节点" value={`${healthyCount}`} />
-                  <MetaCard label="不可达" value={`${unreachableCount}`} />
-                  <MetaCard label="已启用" value={`${enabledCount}`} />
-                </div>
+        <section className="overflow-hidden border border-white/10 bg-[linear-gradient(180deg,rgba(12,18,31,0.96),rgba(9,14,24,0.98))] px-5 py-5 shadow-[0_24px_70px_rgba(2,8,20,0.28)] sm:px-6 lg:px-7 lg:py-6">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <p className="text-xs uppercase tracking-[0.3em] text-white/35">Node Pool</p>
+                <h1 className="text-4xl font-semibold tracking-tight text-white">节点池</h1>
               </div>
-
-              <div className="grid gap-3 xl:min-w-[340px]">
-                <Input onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称、协议、来源..." value={search} />
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <Button onClick={openCreate}>
-                    <Plus className="h-4 w-4" />
-                    新建节点
-                  </Button>
-                  <Button onClick={() => setShowImport(true)} variant="secondary">
-                    <Download className="h-4 w-4" />
-                    导入节点
-                  </Button>
-                  <Button onClick={() => void probeBatch()} variant="secondary">
-                    <Radar className="h-4 w-4" />
-                    批量探测
-                  </Button>
-                </div>
+              <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-sm font-medium">
+                <InlineStat label="可用节点" tone="text-emerald-300" value={`${healthyCount}`} />
+                <InlineStat label="不可用节点" tone="text-rose-300" value={`${unavailableCount}`} />
+                <InlineStat label="已启用节点" tone="text-amber-200" value={`${enabledCount}`} />
               </div>
             </div>
-          </CardHeader>
-        </Card>
 
-        {selected ? (
-          <Card className="overflow-hidden">
-            <CardHeader className="gap-5">
-              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
-                <div className="space-y-4">
+            <div className="flex w-full max-w-[760px] flex-col gap-3 xl:items-end">
+              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                <NodeViewModeSwitch mode={viewMode} onChange={setViewMode} />
+                <Button
+                  className="border-white/10 bg-white/5 px-4"
+                  onClick={() => setShowImport(true)}
+                  variant="secondary"
+                >
+                  <Download className="h-4 w-4" />
+                  导入节点
+                </Button>
+                <Button
+                  className="border-white/10 bg-white/5 px-4"
+                  onClick={() => void probeBatch()}
+                  variant="secondary"
+                >
+                  <Radar className="h-4 w-4" />
+                  批量探测
+                </Button>
+              </div>
+
+              <div className="w-full max-w-[360px]">
+                <Input
+                  className="h-12 bg-[rgba(6,11,21,0.82)]"
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="筛选名称、协议、来源或地址..."
+                  value={search}
+                />
+              </div>
+            </div>
+          </div>
+
+          {selected ? (
+            <div className="mt-5 border border-violet-400/18 bg-[linear-gradient(180deg,rgba(35,33,67,0.9),rgba(24,29,54,0.92))] px-5 py-4">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-3">
-                    <CardTitle className="text-3xl">{selected.name}</CardTitle>
+                    <h2 className="text-2xl font-semibold text-white">{selected.name}</h2>
                     <Badge tone={nodeStatusTone(selected.last_status)}>{formatNodeStatus(selected.last_status)}</Badge>
                     {!selected.enabled ? <Badge tone="muted">已禁用</Badge> : null}
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <MetaCard label="协议" value={selected.protocol.toUpperCase()} />
-                    <MetaCard label="来源" value={formatNodeSource(selected.source_kind)} />
-                    <MetaCard label="最近延迟" value={nodeMetricValue(selected)} />
-                    <MetaCard label="最近探测" value={formatDateTime(selected.last_checked_at)} />
+
+                  <div className="flex flex-wrap gap-3 text-sm">
+                    <DetailChip label="协议" value={selected.protocol.toUpperCase()} />
+                    <DetailChip label="来源" value={formatNodeSource(selected.source_kind)} />
+                    <DetailChip label="延迟" value={nodeMetricValue(selected)} />
+                    <DetailChip label="最近探测" value={formatDateTime(selected.last_checked_at)} />
                   </div>
+
+                  {probeResults[selected.id] ? (
+                    <p className="text-sm text-[var(--muted-foreground)]">
+                      最近一次前端触发探测：
+                      {probeResults[selected.id].success
+                        ? `成功，延迟 ${probeResults[selected.id].latency_ms} ms`
+                        : probeResults[selected.id].error_message || "探测失败"}
+                    </p>
+                  ) : null}
                 </div>
 
-                <div className="grid gap-3 xl:justify-items-end">
+                <div className="flex flex-wrap gap-2 xl:justify-end">
                   <Button onClick={() => void probeSingle(selected)} size="lg">
                     <Radar className="h-4 w-4" />
                     立即探测
                   </Button>
-                  <div className="flex flex-wrap gap-2 xl:justify-end">
-                    <Button onClick={() => openEdit(selected)} variant="secondary">
-                      <Cable className="h-4 w-4" />
-                      编辑节点
-                    </Button>
-                    <Button onClick={() => void remove(selected)} variant="danger">
-                      <Trash2 className="h-4 w-4" />
-                      删除
-                    </Button>
-                  </div>
+                  <Button onClick={() => openEdit(selected)} variant="secondary">
+                    <Cable className="h-4 w-4" />
+                    编辑节点
+                  </Button>
+                  <Button onClick={() => void remove(selected)} variant="danger">
+                    <Trash2 className="h-4 w-4" />
+                    删除
+                  </Button>
                 </div>
               </div>
-            </CardHeader>
-            {probeResults[selected.id] ? (
-              <CardContent className="pt-0">
-                <div className="rounded-[24px] border border-emerald-400/20 bg-emerald-400/10 p-4">
-                  <p className="text-sm font-medium text-white">最近一次前端触发探测</p>
-                  <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-                    {probeResults[selected.id].success
-                      ? `成功，延迟 ${probeResults[selected.id].latency_ms} ms`
-                      : probeResults[selected.id].error_message || "探测失败"}
-                  </p>
-                </div>
-              </CardContent>
-            ) : null}
-          </Card>
-        ) : null}
-
-        <Card className="overflow-hidden">
-          <CardHeader className="pb-0">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <CardTitle className="text-2xl">节点列表</CardTitle>
-                <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 px-3 text-sm text-white">
-                  {filtered.length}
-                </span>
-              </div>
-              <NodeViewModeSwitch mode={viewMode} onChange={setViewMode} />
             </div>
-          </CardHeader>
-          <CardContent className="pt-4">
+          ) : null}
+
+          <div className="mt-6">
             {loading ? (
               <div className="flex items-center justify-center py-16 text-[var(--muted-foreground)]">
                 <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
@@ -339,9 +326,14 @@ export function NodesPage() {
               </div>
             ) : filtered.length === 0 ? (
               <EmptyState
-                title="没有匹配节点"
-                description="先手动新增节点，或通过导入/订阅刷新让列表变得有意义。"
-                action={<Button onClick={openCreate}>立即新建</Button>}
+                action={
+                  <Button onClick={() => setShowImport(true)} variant="secondary">
+                    <Download className="h-4 w-4" />
+                    导入节点
+                  </Button>
+                }
+                description="没有匹配节点。请先导入节点或刷新订阅，再回来查看节点池。"
+                title="节点池为空"
               />
             ) : (
               <NodeCollectionView
@@ -352,8 +344,8 @@ export function NodesPage() {
                 selectedId={selected?.id}
               />
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </div>
 
       <Dialog onOpenChange={setShowForm} open={showForm}>
@@ -383,7 +375,7 @@ export function NodesPage() {
               <Textarea onChange={(event) => setForm((current) => ({ ...current, credential: event.target.value }))} value={form.credential} />
             </Field>
             {editing ? (
-              <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+              <div className="border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
                 编辑节点时后端不会回传原始认证信息。保存前必须重新填写 credential。
               </div>
             ) : null}
@@ -397,7 +389,7 @@ export function NodesPage() {
               <Textarea onChange={(event) => setForm((current) => ({ ...current, rawPayloadJSON: event.target.value }))} value={form.rawPayloadJSON} />
             </Field>
             {editing ? (
-              <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white">
+              <label className="flex items-center gap-3 border border-white/10 bg-white/5 px-4 py-3 text-sm text-white">
                 <input
                   checked={form.enabled}
                   onChange={(event) => setForm((current) => ({ ...current, enabled: event.target.checked }))}
@@ -441,11 +433,27 @@ export function NodesPage() {
   );
 }
 
-function MetaCard({ label, value }: { label: string; value: string }) {
+function InlineStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: string;
+}) {
   return (
-    <div className="rounded-[24px] border border-white/10 bg-white/5 px-4 py-4">
-      <p className="text-xs uppercase tracking-[0.16em] text-[var(--muted-foreground)]">{label}</p>
-      <p className="mt-3 text-lg font-semibold text-white">{value}</p>
+    <div className="flex items-center gap-2">
+      <span className={cn("text-base font-semibold", tone)}>{label}:</span>
+      <span className={cn("text-lg font-semibold", tone)}>{value}</span>
+    </div>
+  );
+}
+
+function DetailChip({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border border-white/10 bg-white/6 px-3 py-2 text-sm text-[var(--muted-foreground)]">
+      <span className="text-white/55">{label}:</span> <span className="font-medium text-white">{value}</span>
     </div>
   );
 }

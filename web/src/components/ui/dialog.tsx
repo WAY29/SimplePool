@@ -29,13 +29,13 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-[min(92vw,760px)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-[28px] border border-white/10 bg-[rgba(8,13,22,0.98)] p-6 shadow-[0_30px_120px_rgba(0,0,0,0.45)]",
+        "fixed left-[50%] top-[50%] z-50 grid w-[min(92vw,760px)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-[8px] border border-white/10 bg-[rgba(8,13,22,0.98)] p-6 shadow-[0_24px_90px_rgba(0,0,0,0.42)]",
         className,
       )}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-5 top-5 rounded-full border border-white/10 p-2 text-[var(--muted-foreground)] transition-colors hover:border-white/20 hover:bg-white/6 hover:text-white">
+      <DialogPrimitive.Close className="absolute right-5 top-5 rounded-[6px] border border-white/10 p-2 text-[var(--muted-foreground)] transition-colors hover:border-white/20 hover:bg-white/6 hover:text-white">
         <X className="h-4 w-4" />
         <span className="sr-only">关闭</span>
       </DialogPrimitive.Close>
@@ -94,4 +94,3 @@ export {
   DialogTitle,
   DialogTrigger,
 };
-

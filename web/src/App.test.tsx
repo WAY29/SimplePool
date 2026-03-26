@@ -173,7 +173,7 @@ describe("App", () => {
     expect(screen.getByText("隧道列表")).toBeInTheDocument();
     expect(screen.getByText("组成员节点")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "网格视图" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "表格视图" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "列表视图" })).toBeInTheDocument();
     expect((await screen.findAllByText(/测试分组/)).length).toBeGreaterThan(0);
     expect(await screen.findByText("代理-A")).toBeInTheDocument();
     await waitFor(() => {
@@ -198,14 +198,17 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "节点编排" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "工作区" }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: "订阅" }).length).toBeGreaterThan(0);
     expect(screen.getByText("SimplePool")).toBeInTheDocument();
     expect(screen.queryByText("Transport JSON")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "查看详情" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "新建节点" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入节点" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批量探测" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "网格视图" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "表格视图" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "列表视图" })).toBeInTheDocument();
   });
 
   it("订阅页隐藏刷新指纹并重排操作按钮", async () => {
