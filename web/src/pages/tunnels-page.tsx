@@ -221,7 +221,7 @@ export function TunnelsPage() {
       <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         <Card className="overflow-hidden">
           <CardHeader className="space-y-4">
-            <PanelTitle eyebrow="Tunnels" title="隧道列表" description="创建隧道时按组快照挑选节点，刷新支持 selector 热切换或重建。" />
+            <PanelTitle eyebrow="Tunnels" title="隧道列表" description="创建隧道时按组快照挑选节点，刷新支持 selector 热切换或重建" />
             <Button onClick={openCreate}>
               <Plus className="h-4 w-4" />
               创建隧道
@@ -234,7 +234,7 @@ export function TunnelsPage() {
                 加载隧道中...
               </div>
             ) : items.length === 0 ? (
-              <EmptyState title="没有隧道" description="从分组中创建 HTTP 代理隧道后，这里会展示运行时状态。" action={<Button onClick={openCreate}>创建隧道</Button>} />
+              <EmptyState title="没有隧道" description="从分组中创建 HTTP 代理隧道后，这里会展示运行时状态" action={<Button onClick={openCreate}>创建隧道</Button>} />
             ) : (
               items.map((item) => (
                 <button
@@ -344,7 +344,7 @@ export function TunnelsPage() {
                         加载事件中...
                       </div>
                     ) : events.length === 0 ? (
-                      <EmptyState title="暂无事件" description="创建、刷新、启停后的事件会显示在这里。" />
+                      <EmptyState title="暂无事件" description="创建、刷新、启停后的事件会显示在这里" />
                     ) : (
                       <div className="grid gap-3">
                         {events.map((event) => {
@@ -369,7 +369,7 @@ export function TunnelsPage() {
             </CardHeader>
           </Card>
         ) : (
-          <EmptyState title="还没有选中隧道" description="左侧选择一个隧道后，这里会展示端口、状态、最近错误和事件列表。" />
+          <EmptyState title="还没有选中隧道" description="左侧选择一个隧道后，这里会展示端口、状态、最近错误和事件列表" />
         )}
       </div>
 

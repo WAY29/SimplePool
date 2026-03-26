@@ -8,7 +8,7 @@ import { useSession } from "@/hooks/use-session";
 import { useShellMetrics } from "@/hooks/use-shell-metrics";
 
 const navigation = [
-  { to: "/workspace", label: "工作区", icon: GitBranch },
+  { to: "/node-groups", label: "节点组", icon: GitBranch },
   { to: "/nodes", label: "节点", icon: Radio },
   { to: "/subscriptions", label: "订阅", icon: ServerCog },
 ];
@@ -22,8 +22,8 @@ const routeMeta: Record<
   "/nodes": {
     chromeTitle: "SimplePool Node Management",
   },
-  "/workspace": {
-    chromeTitle: "SimplePool Workspace",
+  "/node-groups": {
+    chromeTitle: "SimplePool Node Groups",
   },
   "/subscriptions": {
     chromeTitle: "SimplePool Subscription Management",
@@ -31,8 +31,8 @@ const routeMeta: Record<
 };
 
 function topRoute(pathname: string) {
-  if (pathname.startsWith("/workspace")) {
-    return "/workspace";
+  if (pathname.startsWith("/node-groups")) {
+    return "/node-groups";
   }
   return pathname in routeMeta ? pathname : "/nodes";
 }
@@ -73,7 +73,7 @@ export function AppShell({ children }: AppShellProps) {
                   <ReadyPill ready={metrics.readyStatus === "ready"} />
                   <HeaderMetric label="Group Count" value={`${metrics.groupCount}`} />
                   <HeaderMetric label="Active Tunnels" value={`${metrics.activeTunnelCount}`} />
-                  <HeaderMetric label="Available Nodes" value={`${metrics.healthyNodeCount}`} />
+                  <HeaderMetric label="Available Nodes" value={`${metrics.availableNodeCount}`} />
                 </div>
               </div>
 

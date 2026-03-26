@@ -77,7 +77,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 	}
 	prober := deps.NodeProber
 	if prober == nil {
-		prober = singbox.NewProber("https://cloudflare.com/cdn-cgi/trace", 3*time.Second)
+		prober = singbox.NewProber("https://cloudflare.com/cdn-cgi/trace", 3*time.Second, cfg.LogLevel)
 	}
 	fetcher := deps.SubscriptionFetcher
 	if fetcher == nil {

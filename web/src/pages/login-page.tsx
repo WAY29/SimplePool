@@ -30,7 +30,7 @@ export function LoginPage() {
     try {
       await session.login({ username, password });
       toast.success("登录成功");
-      const next = (location.state as { from?: string } | null)?.from ?? "/workspace";
+      const next = (location.state as { from?: string } | null)?.from ?? "/node-groups";
       navigate(next, { replace: true });
     } catch (cause) {
       const message = cause instanceof APIError ? cause.message : "登录失败";

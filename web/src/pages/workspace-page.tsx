@@ -4,10 +4,10 @@ import {
   LoaderCircle,
   Play,
   Plus,
-  RefreshCw,
   Square,
   SquarePen,
   Trash2,
+  RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/app-shell";
@@ -32,10 +32,9 @@ import { useShellMetrics } from "@/hooks/use-shell-metrics";
 import { api, type GroupMemberView, type GroupView, type TunnelView } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
-  countHealthyNodes,
   formatDateTime,
-  inferRegion,
   formatTunnelStatus,
+  inferRegion,
   tunnelStatusTone,
 } from "@/lib/format";
 import {
@@ -55,7 +54,7 @@ const defaultGroupForm: GroupFormValues = {
 const defaultTunnelForm: TunnelFormValues = {
   name: "",
   groupID: "",
-  listenHost: "127.0.0.1",
+  listenHost: "0.0.0.0",
   username: "",
   password: "",
 };
@@ -70,8 +69,10 @@ export function WorkspacePage() {
   const [members, setMembers] = useState<GroupMemberView[]>([]);
   const [loading, setLoading] = useState(true);
   const [memberLoading, setMemberLoading] = useState(false);
-  const [search, setSearch] = useState("");
-  const deferredSearch = useDeferredValue(search);
+  const [groupSearch, setGroupSearch] = useState("");
+  const deferredGroupSearch = useDeferredValue(groupSearch);
+  const [tunnelSearch, setTunnelSearch] = useState("");
+  const deferredTunnelSearch = useDeferredValue(tunnelSearch);
   const [showGroupForm, setShowGroupForm] = useState(false);
   const [editingGroup, setEditingGroup] = useState<GroupView | null>(null);
   const [groupForm, setGroupForm] = useState<GroupFormValues>(defaultGroupForm);
@@ -85,27 +86,27 @@ export function WorkspacePage() {
   const [memberViewMode, setMemberViewMode] = usePersistedViewMode("simplepool.workspace.members.view_mode", "grid");
 
   const selectedGroup = groups.find((item) => item.id === selectedGroupID) ?? null;
+  const groupKeyword = deferredGroupSearch.trim().toLowerCase();
+  const filteredGroups = !groupKeyword
+    ? groups
+    : groups.filter((item) =>
+        [item.name, item.filter_regex, item.description, summarizeGroupRegion(item.name, item.filter_regex)]
+          .join(" ")
+          .toLowerCase()
+          .includes(groupKeyword),
+      );
   const groupTunnels = useMemo(
     () => (selectedGroup ? tunnels.filter((item) => item.group_id === selectedGroup.id) : []),
     [selectedGroup, tunnels],
   );
   const selectedTunnel = groupTunnels.find((item) => item.id === selectedTunnelID) ?? groupTunnels[0] ?? null;
-  const tunnelKeyword = deferredSearch.trim().toLowerCase();
+  const tunnelKeyword = deferredTunnelSearch.trim().toLowerCase();
   const filteredTunnels = !tunnelKeyword
     ? groupTunnels
     : groupTunnels.filter((item) =>
         [item.name, item.listen_host, formatTunnelStatus(item.status)].join(" ").toLowerCase().includes(tunnelKeyword),
       );
-
-  const activeTunnel = selectedTunnel
-    ?? groupTunnels.find((item) => item.status === "running" || item.status === "starting" || item.status === "degraded")
-    ?? tunnels.find((item) => item.status === "running" || item.status === "starting" || item.status === "degraded")
-    ?? null;
-
-  const healthyMembers = countHealthyNodes(members);
-  const degradedTunnelCount = groupTunnels.filter((item) => item.status === "degraded" || item.status === "error").length;
   const activeTunnelCount = groupTunnels.filter((item) => item.status === "running" || item.status === "starting").length;
-  const availableRuntimeCount = groupTunnels.filter((item) => item.runtime_dir?.trim()).length;
 
   async function loadWorkspace(preferredGroupID?: string | null) {
     setLoading(true);
@@ -124,7 +125,7 @@ export function WorkspacePage() {
         ?? null;
       setSelectedGroupID(nextGroupID);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "工作区数据加载失败");
+      toast.error(error instanceof Error ? error.message : "节点组数据加载失败");
     } finally {
       setLoading(false);
     }
@@ -333,7 +334,7 @@ export function WorkspacePage() {
   }
 
   async function removeTunnel(item: TunnelView) {
-    if (!window.confirm(`确认删除隧道 ${item.name}？运行时目录也会一起清理。`)) {
+    if (!window.confirm(`确认删除隧道 ${item.name}？运行时目录也会一起清理`)) {
       return;
     }
     try {
@@ -346,48 +347,16 @@ export function WorkspacePage() {
     }
   }
 
-  async function refreshAll() {
-    await loadWorkspace(selectedGroupID);
-    await metrics.refresh();
-  }
-
-  const proxySummary = activeTunnel
-    ? `HTTP 代理已启用。活动地址 ${activeTunnel.listen_host}:${activeTunnel.listen_port}。认证${activeTunnel.has_auth ? "已启用" : "未启用"}。`
-    : "HTTP 代理未启用。当前没有运行中的隧道。";
-
   return (
     <AppShell hideHeader>
       <div className="rounded-[30px] border border-white/10 bg-[linear-gradient(180deg,rgba(12,18,28,0.96),rgba(8,12,20,0.98))] shadow-[0_30px_120px_rgba(2,8,20,0.48)]">
         <div className="border-b border-white/8 px-5 py-5 sm:px-6">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-2 text-violet-200">
-                    <Boxes className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h1 className="text-3xl font-semibold text-white">动态分组管理</h1>
-                  </div>
-                </div>
-                <div className="rounded-full border border-violet-400/25 bg-violet-500/10 px-4 py-2 text-sm text-violet-100">
-                  {proxySummary}
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--muted-foreground)]">
-                <span>左侧导航已恢复，工作区内部布局继续保持参考图的分组/隧道双栏结构。</span>
-              </div>
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-2 text-violet-200">
+              <Boxes className="h-5 w-5" />
             </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <Button onClick={openCreateGroup}>
-                <Plus className="h-4 w-4" />
-                新建分组
-              </Button>
-              <Button onClick={() => void refreshAll()} variant="secondary">
-                <RefreshCw className="h-4 w-4" />
-                刷新数据
-              </Button>
+            <div>
+              <h1 className="text-3xl font-semibold text-white">节点组</h1>
             </div>
           </div>
         </div>
@@ -395,13 +364,27 @@ export function WorkspacePage() {
         <div className="grid gap-4 p-4 sm:p-5 xl:grid-cols-[320px_minmax(0,1fr)]">
           <div className="grid gap-4">
             <WorkspaceSection count={groups.length} title="动态分组">
+              <div className="flex items-center gap-2">
+                <Input
+                  onChange={(event) => setGroupSearch(event.target.value)}
+                  placeholder="搜索分组名称"
+                  value={groupSearch}
+                />
+                <Button onClick={openCreateGroup}>
+                  <Plus className="h-4 w-4" />
+                  新建分组
+                </Button>
+              </div>
+
               {loading ? (
                 <SectionLoading label="正在加载分组..." />
               ) : groups.length === 0 ? (
-                <SectionEmpty message="暂无分组，请先创建一个动态分组。" />
+                <SectionEmpty message="暂无分组" />
+              ) : filteredGroups.length === 0 ? (
+                <SectionEmpty message="没有匹配的分组" />
               ) : (
                 <div className="grid gap-3">
-                  {groups.map((item) => (
+                  {filteredGroups.map((item) => (
                     <button
                       className={cn(
                         "grid gap-2 rounded-[18px] border px-4 py-4 text-left transition-colors",
@@ -434,12 +417,12 @@ export function WorkspacePage() {
               )}
             </WorkspaceSection>
 
-            <WorkspaceSection count={groupTunnels.length} title="隧道列表">
+            <WorkspaceSection count={groupTunnels.length} title="动态隧道">
               <div className="flex items-center gap-2">
                 <Input
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) => setTunnelSearch(event.target.value)}
                   placeholder="搜索隧道名称"
-                  value={search}
+                  value={tunnelSearch}
                 />
                 <Button disabled={!selectedGroup} onClick={openCreateTunnel}>
                   创建隧道
@@ -447,9 +430,9 @@ export function WorkspacePage() {
               </div>
 
               {!selectedGroup ? (
-                <SectionEmpty message="请先选择一个分组，再为该分组创建隧道。" />
+                <SectionEmpty message="请先选择一个分组" />
               ) : filteredTunnels.length === 0 ? (
-                <SectionEmpty message={groupTunnels.length === 0 ? "当前分组还没有隧道。" : "没有匹配的隧道。"} />
+                <SectionEmpty message={groupTunnels.length === 0 ? "当前分组还没有隧道" : "没有匹配的隧道"} />
               ) : (
                 <div className="grid gap-3">
                   {filteredTunnels.map((item) => (
@@ -516,15 +499,15 @@ export function WorkspacePage() {
             <CardHeader className="gap-5 border-b border-white/8 p-5">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div className="space-y-4">
-                  <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
                     <CardTitle className="text-3xl">{selectedGroup?.name ?? "未选择分组"}</CardTitle>
-                    <span className="rounded-md bg-violet-500/80 px-2 py-1 text-xs font-medium text-white">
-                      {selectedGroup ? "已选中" : "等待选择"}
-                    </span>
+                    {selectedGroup ? (
+                      <>
+                        <WorkspaceInlineMetric label="组节点" value={`${members.length}`} />
+                        <WorkspaceInlineMetric label="活动隧道" value={`${activeTunnelCount}`} />
+                      </>
+                    ) : null}
                   </div>
-                  <p className="max-w-3xl text-sm text-[var(--muted-foreground)]">
-                    {selectedGroup?.description || "选择左侧分组后，这里会显示匹配成员、隧道状态和节点清单。"}
-                  </p>
                 </div>
                 {selectedGroup ? (
                   <div className="flex flex-wrap gap-2">
@@ -539,22 +522,12 @@ export function WorkspacePage() {
                   </div>
                 ) : null}
               </div>
-
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <WorkspaceStatCard label="匹配节点" tone="neutral" value={`${members.length}`} />
-                <WorkspaceStatCard label="活跃成员" tone="neutral" value={`${healthyMembers}`} />
-                <WorkspaceStatCard label="活动/降级隧道" tone="warn" value={`${activeTunnelCount}/${degradedTunnelCount}`} />
-                <WorkspaceStatCard label="可用运行时" tone="danger" value={`${availableRuntimeCount}/${groupTunnels.length}`} />
-              </div>
             </CardHeader>
 
             <CardContent className="grid gap-4 p-5">
               <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                 <div>
-                  <h2 className="text-2xl font-semibold text-white">组成员节点</h2>
-                  <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                    当前分组命中的节点支持网格视图与列表视图切换，两种展示方式与节点页保持统一。
-                  </p>
+                  <h2 className="text-2xl font-semibold text-white">组节点</h2>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   {selectedGroup ? (
@@ -569,7 +542,7 @@ export function WorkspacePage() {
               {loading || memberLoading ? (
                 <SectionLoading label="正在加载组成员..." />
               ) : (
-                <NodeCollectionView emptyMessage="当前分组没有匹配节点。" items={members} mode={memberViewMode} />
+                <NodeCollectionView emptyMessage="当前分组没有匹配节点" items={members} mode={memberViewMode} />
               )}
             </CardContent>
           </Card>
@@ -580,7 +553,7 @@ export function WorkspacePage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editingGroup ? "编辑分组" : "新建分组"}</DialogTitle>
-            <DialogDescription>分组成员由 `filter_regex` 实时匹配节点名称生成。</DialogDescription>
+            <DialogDescription>分组成员由 `filter_regex` 实时匹配节点名称生成</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
             <Field error={groupErrors.name} label="分组名称">
@@ -608,7 +581,7 @@ export function WorkspacePage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editingTunnel ? "编辑隧道" : "创建隧道"}</DialogTitle>
-            <DialogDescription>创建后会立即出现在当前分组的隧道列表中。</DialogDescription>
+            <DialogDescription>创建后会立即出现在当前分组的隧道列表中</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
             <Field error={tunnelErrors.name} label="隧道名称">
@@ -628,9 +601,6 @@ export function WorkspacePage() {
               <Field label="监听地址">
                 <Input onChange={(event) => setTunnelForm((current) => ({ ...current, listenHost: event.target.value }))} value={tunnelForm.listenHost} />
               </Field>
-              <div className="rounded-[20px] border border-white/10 bg-white/5 px-4 py-4 text-sm text-[var(--muted-foreground)]">
-                监听端口由后端自动分配，创建后显示在隧道列表。
-              </div>
             </InlineFields>
             <InlineFields>
               <Field label="代理用户名">
@@ -642,7 +612,7 @@ export function WorkspacePage() {
             </InlineFields>
             {editingTunnel?.has_auth ? (
               <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
-                当前隧道已启用认证。后端不会返回原始用户名/密码，编辑时需要重新输入才能保留认证。
+                当前隧道已启用认证后端不会返回原始用户名/密码，编辑时需要重新输入才能保留认证
               </div>
             ) : null}
           </div>
@@ -684,25 +654,11 @@ function WorkspaceSection({
   );
 }
 
-function WorkspaceStatCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: "neutral" | "warn" | "danger";
-}) {
-  const tones = {
-    neutral: "border-white/10 bg-white/4",
-    warn: "border-amber-400/30 bg-amber-500/14",
-    danger: "border-rose-400/25 bg-rose-500/14",
-  };
-
+function WorkspaceInlineMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className={cn("rounded-[20px] border px-4 py-4", tones[tone])}>
-      <p className="text-sm text-[var(--muted-foreground)]">{label}</p>
-      <p className="mt-3 text-4xl font-semibold text-white">{value}</p>
+    <div className="inline-flex items-center gap-2 text-sm text-white/78">
+      <span className="text-white/45">{label}:</span>
+      <span className="font-semibold text-white">{value}</span>
     </div>
   );
 }

@@ -1,6 +1,7 @@
-import { ArrowUpRight, LayoutGrid, Rows3 } from "lucide-react";
+import { Clock3, LayoutGrid, LoaderCircle, Rows3 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -13,6 +14,7 @@ import {
 import {
   formatLatency,
   formatNodeStatus,
+  formatRegionFlag,
   formatRelativeTime,
   inferRegion,
   nodeStatusTone,
@@ -31,6 +33,12 @@ export type NodeCollectionItem = {
   last_status: string;
   last_latency_ms?: number | null;
   last_checked_at?: string | null;
+};
+
+export type NodeProbeState = {
+  probing: boolean;
+  latencyMS?: number | null;
+  success?: boolean;
 };
 
 export function NodeViewModeSwitch({
@@ -58,12 +66,16 @@ export function NodeCollectionView({
   selectedId,
   onSelect,
   emptyMessage,
+  probeStates,
+  onProbe,
 }: {
   items: NodeCollectionItem[];
   mode: NodeCollectionViewMode;
   selectedId?: string | null;
   onSelect?: (item: NodeCollectionItem) => void;
   emptyMessage?: string;
+  probeStates?: Record<string, NodeProbeState>;
+  onProbe?: (item: NodeCollectionItem) => void;
 }) {
   if (items.length === 0) {
     return (
@@ -84,6 +96,7 @@ export function NodeCollectionView({
               <TableHeaderCell>延迟</TableHeaderCell>
               <TableHeaderCell>地区</TableHeaderCell>
               <TableHeaderCell>最近探测</TableHeaderCell>
+              {onProbe ? <TableHeaderCell className="w-[84px] text-right">探测</TableHeaderCell> : null}
             </tr>
           </TableHead>
           <TableBody>
@@ -91,6 +104,7 @@ export function NodeCollectionView({
               <TableRow
                 className={cn(
                   onSelect ? "cursor-pointer" : "",
+                  probeStates?.[item.id]?.probing ? "opacity-55" : "",
                   selectedId === item.id ? "bg-[rgba(109,77,243,0.14)]" : "",
                 )}
                 key={item.id}
@@ -129,9 +143,27 @@ export function NodeCollectionView({
                     {nodeCollectionStatus(item)}
                   </span>
                 </TableCell>
-                <TableCell className={cn("font-medium", nodeMetricClass(item))}>{nodeMetricValue(item)}</TableCell>
-                <TableCell>{nodeRegion(item)}</TableCell>
+                <TableCell className={cn("font-medium", nodeMetricClass(item, probeStates?.[item.id]))}>
+                  <span className="whitespace-nowrap">{nodeMetricValue(item, probeStates?.[item.id])}</span>
+                </TableCell>
+                <TableCell>
+                  <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                    <span aria-hidden="true" className="emoji-flag text-base leading-none">
+                      {formatRegionFlag(nodeRegion(item))}
+                    </span>
+                    <span>{nodeRegion(item)}</span>
+                  </span>
+                </TableCell>
                 <TableCell>{formatRelativeTime(item.last_checked_at)}</TableCell>
+                {onProbe ? (
+                  <TableCell className="text-right">
+                    <ProbeActionButton
+                      item={item}
+                      onProbe={onProbe}
+                      probing={Boolean(probeStates?.[item.id]?.probing)}
+                    />
+                  </TableCell>
+                ) : null}
               </TableRow>
             ))}
           </TableBody>
@@ -141,63 +173,82 @@ export function NodeCollectionView({
   }
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+    <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(180px,1fr))]">
       {items.map((item) => {
         const selectable = Boolean(onSelect);
+        const probeState = probeStates?.[item.id];
         const content = (
           <>
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 space-y-3">
-                <span className="inline-flex h-7 min-w-10 items-center justify-center border border-white/18 bg-white/90 px-2 text-[11px] font-semibold tracking-[0.12em] text-slate-900">
-                  {nodeRegion(item)}
+              <div className="min-w-0 space-y-2">
+                <span
+                  aria-label={`${nodeRegion(item)} 旗帜`}
+                  className="emoji-flag inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/14 bg-white/10 text-base shadow-[0_10px_24px_rgba(2,8,20,0.2)]"
+                >
+                  {formatRegionFlag(nodeRegion(item))}
                 </span>
-                <p className="line-clamp-2 text-[1.02rem] font-semibold leading-7 text-white">{item.name}</p>
+                <p className="line-clamp-2 text-[0.95rem] font-semibold leading-6 text-white">{item.name}</p>
               </div>
+              {onProbe ? (
+                <ProbeActionButton item={item} onProbe={onProbe} probing={Boolean(probeState?.probing)} />
+              ) : null}
             </div>
 
-            <div className="grid gap-1">
-              <p className="text-sm text-white/88">
-                {item.protocol.toUpperCase()} / {formatNodeSource(item.source_kind)}
-              </p>
-              <p className="text-sm text-[var(--muted-foreground)]">
-                最近探测 {formatRelativeTime(item.last_checked_at)}
-              </p>
-            </div>
+            <div className="min-h-0" />
 
             <div className="mt-auto flex items-end justify-between gap-3">
-              <span className={cn("inline-flex items-center gap-1 text-xl font-semibold", nodeMetricClass(item))}>
-                {nodeMetricValue(item)}
-                {showHealthyTrend(item) ? <ArrowUpRight className="h-4 w-4" /> : null}
-              </span>
-              <Badge className="tracking-[0.08em]" tone={nodeCollectionTone(item)}>
-                {nodeCollectionStatus(item)}
-              </Badge>
+              <div className="grid gap-1">
+                <p className="text-[11px] uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+                  最近探测
+                </p>
+                <p className="text-xs text-white/78">
+                  {formatRelativeTime(item.last_checked_at)}
+                </p>
+              </div>
+              <div className="flex flex-col items-end gap-2">
+                <span className={cn("inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold", nodeMetricClass(item, probeState))}>
+                  {nodeMetricValue(item, probeState)}
+                </span>
+                <Badge className="tracking-[0.08em]" tone={nodeCollectionTone(item)}>
+                  {nodeCollectionStatus(item)}
+                </Badge>
+              </div>
             </div>
           </>
         );
 
         if (selectable) {
           return (
-            <button
+            <div
+              aria-pressed={selectedId === item.id}
               className={cn(
-                "grid min-h-[168px] gap-5 border px-5 py-4 text-left transition-colors",
+                "grid min-h-[144px] gap-4 rounded-[24px] border px-4 py-3.5 text-left transition-colors",
+                probeState?.probing ? "opacity-55" : "",
                 selectedId === item.id
                   ? "border-violet-400/35 bg-[linear-gradient(180deg,rgba(42,38,74,0.95),rgba(26,31,58,0.92))] shadow-[0_0_0_1px_rgba(167,139,250,0.16)_inset]"
                   : "border-white/10 bg-[linear-gradient(180deg,rgba(39,41,72,0.9),rgba(33,36,66,0.88))] hover:border-white/18 hover:bg-[linear-gradient(180deg,rgba(45,47,81,0.92),rgba(36,39,72,0.9))]",
               )}
               key={item.id}
               onClick={() => onSelect?.(item)}
-              type="button"
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect?.(item);
+                }
+              }}
+              role="button"
+              tabIndex={0}
             >
               {content}
-            </button>
+            </div>
           );
         }
 
         return (
           <div
             className={cn(
-              "grid min-h-[168px] gap-5 border px-5 py-4 text-left transition-colors",
+              "grid min-h-[144px] gap-4 rounded-[24px] border px-4 py-3.5 text-left transition-colors",
+              probeState?.probing ? "opacity-55" : "",
               selectedId === item.id
                 ? "border-violet-400/35 bg-[linear-gradient(180deg,rgba(42,38,74,0.95),rgba(26,31,58,0.92))] shadow-[0_0_0_1px_rgba(167,139,250,0.16)_inset]"
                 : "border-white/10 bg-[linear-gradient(180deg,rgba(39,41,72,0.9),rgba(33,36,66,0.88))] hover:border-white/18 hover:bg-[linear-gradient(180deg,rgba(45,47,81,0.92),rgba(36,39,72,0.9))]",
@@ -209,6 +260,33 @@ export function NodeCollectionView({
         );
       })}
     </div>
+  );
+}
+
+function ProbeActionButton({
+  item,
+  probing,
+  onProbe,
+}: {
+  item: NodeCollectionItem;
+  probing: boolean;
+  onProbe: (item: NodeCollectionItem) => void;
+}) {
+  return (
+    <Button
+      aria-label={`测试 ${item.name} 延迟`}
+      className="h-8 w-8 rounded-full border-white/10 bg-black/20 p-0 text-white/75 hover:bg-white/10 hover:text-white"
+      disabled={probing || !item.enabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        onProbe(item);
+      }}
+      size="sm"
+      type="button"
+      variant="ghost"
+    >
+      {probing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Clock3 className="h-4 w-4" />}
+    </Button>
   );
 }
 
@@ -245,10 +323,6 @@ function nodeRegion(item: NodeCollectionItem) {
   return region === "—" ? "AUTO" : region;
 }
 
-function showHealthyTrend(item: NodeCollectionItem) {
-  return item.enabled && item.last_status === "healthy" && item.last_latency_ms !== undefined && item.last_latency_ms !== null;
-}
-
 export function formatNodeSource(sourceKind?: string) {
   switch (sourceKind) {
     case "subscription":
@@ -260,19 +334,34 @@ export function formatNodeSource(sourceKind?: string) {
   }
 }
 
-export function nodeMetricValue(item: NodeCollectionItem) {
+export function nodeMetricValue(item: NodeCollectionItem, probeState?: NodeProbeState) {
   if (!item.enabled) {
     return "禁用";
+  }
+  if (probeState?.probing) {
+    return "探测中";
   }
   if (item.last_status === "unreachable") {
     return "超时";
   }
+  if (probeState?.latencyMS !== undefined) {
+    return formatLatency(probeState.latencyMS);
+  }
   return formatLatency(item.last_latency_ms);
 }
 
-export function nodeMetricClass(item: NodeCollectionItem) {
+export function nodeMetricClass(item: NodeCollectionItem, probeState?: NodeProbeState) {
   if (!item.enabled) {
     return "text-white/55";
+  }
+  if (probeState?.probing) {
+    return "text-slate-300";
+  }
+  if (probeState?.success === true) {
+    return "text-emerald-300";
+  }
+  if (probeState?.success === false) {
+    return "text-rose-300";
   }
   if (item.last_status === "healthy") {
     return "text-emerald-300";

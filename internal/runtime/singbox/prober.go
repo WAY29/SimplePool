@@ -16,15 +16,17 @@ import (
 	"github.com/sagernet/sing-box/option"
 	sbjson "github.com/sagernet/sing/common/json"
 
+	"github.com/WAY29/SimplePool/internal/logging"
 	"github.com/WAY29/SimplePool/internal/node"
 )
 
 type Prober struct {
-	testURL string
-	timeout time.Duration
+	testURL  string
+	timeout  time.Duration
+	logLevel string
 }
 
-func NewProber(testURL string, timeout time.Duration) *Prober {
+func NewProber(testURL string, timeout time.Duration, logLevel string) *Prober {
 	if testURL == "" {
 		testURL = "https://cloudflare.com/cdn-cgi/trace"
 	}
@@ -32,8 +34,9 @@ func NewProber(testURL string, timeout time.Duration) *Prober {
 		timeout = 3 * time.Second
 	}
 	return &Prober{
-		testURL: testURL,
-		timeout: timeout,
+		testURL:  testURL,
+		timeout:  timeout,
+		logLevel: logging.NormalizeLevel(logLevel),
 	}
 }
 
@@ -112,6 +115,9 @@ func (p *Prober) buildConfig(target node.ProbeTarget, inboundPort int) ([]byte, 
 	}
 
 	config := map[string]any{
+		"log": map[string]any{
+			"level": p.logLevel,
+		},
 		"inbounds": []map[string]any{
 			{
 				"type":        "http",

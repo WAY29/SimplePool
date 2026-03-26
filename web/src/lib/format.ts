@@ -1,5 +1,7 @@
 import type { GroupMemberView, NodeView, TunnelView } from "@/lib/api";
 
+type AvailableNodeLike = Pick<NodeView, "enabled" | "last_status"> | Pick<GroupMemberView, "enabled" | "last_status">;
+
 const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit",
   day: "2-digit",
@@ -128,28 +130,74 @@ export function safeRegex(pattern: string) {
   }
 }
 
+const regionMatchers = [
+  { code: "HK", pattern: /香港|hong kong|\bhk\b/ },
+  { code: "JP", pattern: /日本|japan|tokyo|osaka|\bjp\b/ },
+  { code: "SG", pattern: /新加坡|singapore|\bsg\b/ },
+  { code: "US", pattern: /美国|united states|usa|los angeles|new york|\bus\b/ },
+  { code: "TW", pattern: /台湾|taiwan|\btw\b/ },
+  { code: "FR", pattern: /法国|france|paris|\bfr\b/ },
+  { code: "CA", pattern: /加拿大|canada|toronto|vancouver|montreal|\bca\b/ },
+  { code: "GB", pattern: /英国|united kingdom|england|london|\buk\b|\bgb\b/ },
+  { code: "DE", pattern: /德国|germany|frankfurt|berlin|\bde\b/ },
+  { code: "KR", pattern: /韩国|korea|seoul|busan|\bkr\b/ },
+  { code: "AU", pattern: /澳大利亚|australia|sydney|melbourne|\bau\b/ },
+  { code: "NL", pattern: /荷兰|netherlands|amsterdam|\bnl\b/ },
+] as const;
+
 export function inferRegion(value: string) {
   const normalized = value.toLowerCase();
-  if (/香港|hong kong|\bhk\b/.test(normalized)) {
-    return "HK";
-  }
-  if (/日本|japan|tokyo|osaka|\bjp\b/.test(normalized)) {
-    return "JP";
-  }
-  if (/新加坡|singapore|\bsg\b/.test(normalized)) {
-    return "SG";
-  }
-  if (/美国|united states|usa|los angeles|new york|\bus\b/.test(normalized)) {
-    return "US";
-  }
-  if (/台湾|taiwan|\btw\b/.test(normalized)) {
-    return "TW";
+  for (const matcher of regionMatchers) {
+    if (matcher.pattern.test(normalized)) {
+      return matcher.code;
+    }
   }
   return "—";
 }
 
+export function formatRegionFlag(region?: string) {
+  switch (region) {
+    case "HK":
+      return "🇭🇰";
+    case "JP":
+      return "🇯🇵";
+    case "SG":
+      return "🇸🇬";
+    case "US":
+      return "🇺🇸";
+    case "TW":
+      return "🇹🇼";
+    case "FR":
+      return "🇫🇷";
+    case "CA":
+      return "🇨🇦";
+    case "GB":
+      return "🇬🇧";
+    case "DE":
+      return "🇩🇪";
+    case "KR":
+      return "🇰🇷";
+    case "AU":
+      return "🇦🇺";
+    case "NL":
+      return "🇳🇱";
+    case "AUTO":
+    case "—":
+    default:
+      return "🌐";
+  }
+}
+
 export function countHealthyNodes(items: Array<NodeView | GroupMemberView>) {
   return items.filter((item) => item.enabled && item.last_status === "healthy").length;
+}
+
+export function isAvailableNode(item: AvailableNodeLike) {
+  return item.enabled && item.last_status !== "unreachable";
+}
+
+export function countAvailableNodes(items: AvailableNodeLike[]) {
+  return items.filter((item) => isAvailableNode(item)).length;
 }
 
 export function countRunningTunnels(items: TunnelView[]) {

@@ -5,27 +5,33 @@ import {
   useEffect,
   useState,
 } from "react";
+import type { GroupMemberView, NodeView } from "@/lib/api";
 import { api } from "@/lib/api";
-import { countHealthyNodes, countRunningTunnels } from "@/lib/format";
+import { countAvailableNodes, countRunningTunnels, isAvailableNode } from "@/lib/format";
 import { useSession } from "@/hooks/use-session";
+
+type AvailableNodeLike = Pick<NodeView, "enabled" | "last_status"> | Pick<GroupMemberView, "enabled" | "last_status">;
 
 type ShellMetrics = {
   readyStatus: string;
   groupCount: number;
   activeTunnelCount: number;
-  healthyNodeCount: number;
+  availableNodeCount: number;
   refresh: () => Promise<void>;
+  reconcileAvailableNode: (previous: AvailableNodeLike, next: AvailableNodeLike) => void;
 };
+
+type ShellMetricsSnapshot = Omit<ShellMetrics, "refresh" | "reconcileAvailableNode">;
 
 const ShellMetricsContext = createContext<ShellMetrics | null>(null);
 
 export function ShellMetricsProvider({ children }: { children: ReactNode }) {
   const session = useSession();
-  const [metrics, setMetrics] = useState<Omit<ShellMetrics, "refresh">>({
+  const [metrics, setMetrics] = useState<ShellMetricsSnapshot>({
     readyStatus: "unknown",
     groupCount: 0,
     activeTunnelCount: 0,
-    healthyNodeCount: 0,
+    availableNodeCount: 0,
   });
 
   async function refresh() {
@@ -34,7 +40,7 @@ export function ShellMetricsProvider({ children }: { children: ReactNode }) {
         readyStatus: "unknown",
         groupCount: 0,
         activeTunnelCount: 0,
-        healthyNodeCount: 0,
+        availableNodeCount: 0,
       });
       return;
     }
@@ -50,7 +56,7 @@ export function ShellMetricsProvider({ children }: { children: ReactNode }) {
         readyStatus: ready.status,
         groupCount: groups.length,
         activeTunnelCount: countRunningTunnels(tunnels),
-        healthyNodeCount: countHealthyNodes(nodes),
+        availableNodeCount: countAvailableNodes(nodes),
       });
     } catch {
       setMetrics((current) => ({
@@ -58,6 +64,20 @@ export function ShellMetricsProvider({ children }: { children: ReactNode }) {
         readyStatus: "degraded",
       }));
     }
+  }
+
+  function reconcileAvailableNode(previous: AvailableNodeLike, next: AvailableNodeLike) {
+    setMetrics((current) => {
+      const previousAvailable = isAvailableNode(previous);
+      const nextAvailable = isAvailableNode(next);
+      if (previousAvailable === nextAvailable) {
+        return current;
+      }
+      return {
+        ...current,
+        availableNodeCount: Math.max(0, current.availableNodeCount + (nextAvailable ? 1 : -1)),
+      };
+    });
   }
 
   useEffect(() => {
@@ -69,7 +89,7 @@ export function ShellMetricsProvider({ children }: { children: ReactNode }) {
       readyStatus: "unknown",
       groupCount: 0,
       activeTunnelCount: 0,
-      healthyNodeCount: 0,
+      availableNodeCount: 0,
     });
   }, [session.status]);
 
@@ -78,6 +98,7 @@ export function ShellMetricsProvider({ children }: { children: ReactNode }) {
       value={{
         ...metrics,
         refresh,
+        reconcileAvailableNode,
       }}
     >
       {children}

@@ -161,7 +161,7 @@ export function GroupsPage() {
       <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
         <Card className="overflow-hidden">
           <CardHeader className="space-y-4">
-            <PanelTitle eyebrow="Groups" title="动态组" description="通过正则规则实时计算成员，不做静态落表。" />
+            <PanelTitle eyebrow="Groups" title="动态组" description="通过正则规则实时计算成员，不做静态落表" />
             <Button onClick={openCreate}>
               <Plus className="h-4 w-4" />
               新建分组
@@ -174,7 +174,7 @@ export function GroupsPage() {
                 加载分组中...
               </div>
             ) : items.length === 0 ? (
-              <EmptyState title="没有分组" description="先创建一个正则组，再从组中创建隧道。" action={<Button onClick={openCreate}>新建分组</Button>} />
+              <EmptyState title="没有分组" description="先创建一个正则组，再从组中创建隧道" action={<Button onClick={openCreate}>新建分组</Button>} />
             ) : (
               items.map((item) => (
                 <button
@@ -235,7 +235,7 @@ export function GroupsPage() {
                   加载成员中...
                 </div>
               ) : members.length === 0 ? (
-                <EmptyState title="当前组没有匹配节点" description="检查正则规则或先导入更多节点。" />
+                <EmptyState title="当前组没有匹配节点" description="检查正则规则或先导入更多节点" />
               ) : (
                 <Table>
                   <TableElement>
@@ -267,7 +267,7 @@ export function GroupsPage() {
             </CardContent>
           </Card>
         ) : (
-          <EmptyState title="还没有选中分组" description="左侧选择一个分组后，这里会展示实时成员预览。" />
+          <EmptyState title="还没有选中分组" description="左侧选择一个分组后，这里会展示实时成员预览" />
         )}
       </div>
 

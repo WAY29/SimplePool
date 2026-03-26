@@ -22,7 +22,7 @@
 - `SIMPLEPOOL_ADMIN_USERNAME`：后台初始账号，默认 `admin`
 - `SIMPLEPOOL_ADMIN_PASSWORD`：后台初始密码，必填
 - `SIMPLEPOOL_HTTP_ADDR`：后端监听地址，默认 `127.0.0.1:7891`
-- `SIMPLEPOOL_LOG_LEVEL`：日志级别，支持 `debug|info|warn|error`，同时用于 SimplePool 自身日志和嵌入式 `sing-box` 实例日志
+- `SIMPLEPOOL_LOG_LEVEL`：日志级别，支持 `debug|info|warn|error`，同时用于 SimplePool 自身日志和所有嵌入式 `sing-box` 实例日志（包括隧道实例与延迟测试探测实例）
 
 ## 通过配置文件启动
 

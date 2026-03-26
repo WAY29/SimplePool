@@ -10,6 +10,8 @@ import { WorkspacePage } from "@/pages/workspace-page";
 import { ShellMetricsProvider } from "@/hooks/use-shell-metrics";
 import { SessionProvider, useSession } from "@/hooks/use-session";
 
+const nodeGroupsRoute = "/node-groups";
+
 function AppRoutes() {
   const session = useSession();
 
@@ -28,8 +30,8 @@ function AppRoutes() {
         <Route index element={<LoginPage />} />
       </Route>
       <Route element={<RequireAuth />} path="/">
-        <Route element={<Navigate replace to="/workspace" />} index />
-        <Route element={<WorkspacePage />} path="workspace" />
+        <Route element={<Navigate replace to={nodeGroupsRoute} />} index />
+        <Route element={<WorkspacePage />} path="node-groups" />
         <Route element={<NodesPage />} path="nodes" />
         <Route element={<SubscriptionsPage />} path="subscriptions" />
         <Route element={<NotFoundPage />} path="*" />
@@ -56,7 +58,7 @@ function RequireAuth() {
 function RequireGuest() {
   const session = useSession();
   if (session.status === "authenticated") {
-    return <Navigate replace to="/workspace" />;
+    return <Navigate replace to={nodeGroupsRoute} />;
   }
   return <Outlet />;
 }

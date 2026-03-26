@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { usePersistedViewMode } from "@/hooks/use-persisted-view-mode";
 import { api, type NodeView, type ProbeBatchResult } from "@/lib/api";
-import { formatDateTime, formatNodeStatus, nodeStatusTone } from "@/lib/format";
+import { countAvailableNodes, formatDateTime, formatNodeStatus, nodeStatusTone } from "@/lib/format";
 import { hasErrors, type NodeFormValues, validateNodeForm } from "@/lib/forms";
 import { cn } from "@/lib/utils";
 import { useAuthorizedRequest } from "@/hooks/use-authorized-request";
@@ -57,7 +57,40 @@ export function NodesPage() {
   const [errors, setErrors] = useState<Partial<Record<keyof NodeFormValues, string>>>({});
   const [importPayload, setImportPayload] = useState("");
   const [probeResults, setProbeResults] = useState<Record<string, ProbeBatchResult>>({});
+  const [probingNodeIDs, setProbingNodeIDs] = useState<Record<string, boolean>>({});
   const [viewMode, setViewMode] = usePersistedViewMode("simplepool.nodes.view_mode", "grid");
+
+  function applyProbeResult(nodeID: string, result: { success: boolean; latency_ms?: number | null; checked_at?: string | null }) {
+    setItems((current) =>
+      current.map((item) => {
+        if (item.id !== nodeID) {
+          return item;
+        }
+        const nextStatus = result.success ? "healthy" : "unreachable";
+        const nextItem = {
+          ...item,
+          last_status: nextStatus,
+          last_latency_ms: result.success ? result.latency_ms ?? null : null,
+          last_checked_at: result.checked_at ?? new Date().toISOString(),
+        };
+        metrics.reconcileAvailableNode(item, nextItem);
+        return nextItem;
+      }),
+    );
+    setSelected((current) => {
+      if (!current || current.id !== nodeID) {
+        return current;
+      }
+      const nextStatus = result.success ? "healthy" : "unreachable";
+      const nextSelected = {
+        ...current,
+        last_status: nextStatus,
+        last_latency_ms: result.success ? result.latency_ms ?? null : null,
+        last_checked_at: result.checked_at ?? new Date().toISOString(),
+      };
+      return nextSelected;
+    });
+  }
 
   async function load() {
     setLoading(true);
@@ -82,9 +115,20 @@ export function NodesPage() {
     : items.filter((item) =>
         [item.name, item.protocol, item.server, item.source_kind].join(" ").toLowerCase().includes(keyword),
       );
-  const healthyCount = items.filter((item) => item.enabled && item.last_status === "healthy").length;
+  const availableCount = countAvailableNodes(items);
   const unavailableCount = items.filter((item) => !item.enabled || item.last_status === "unreachable").length;
   const enabledCount = items.filter((item) => item.enabled).length;
+
+  const probeStates = Object.fromEntries(
+    items.map((item) => [
+      item.id,
+      {
+        probing: Boolean(probingNodeIDs[item.id]),
+        latencyMS: probeResults[item.id]?.latency_ms ?? item.last_latency_ms,
+        success: probeResults[item.id]?.success,
+      },
+    ]),
+  );
 
   function openEdit(item: NodeView) {
     setEditing(item);
@@ -192,6 +236,7 @@ export function NodesPage() {
   }
 
   async function probeSingle(item: NodeView) {
+    setProbingNodeIDs((current) => ({ ...current, [item.id]: true }));
     try {
       const result = await run((token) => api.nodes.probe(token, item.id, true));
       setProbeResults((current) => ({
@@ -201,27 +246,67 @@ export function NodesPage() {
           ...result,
         },
       }));
+      applyProbeResult(item.id, result);
       toast.success(result.success ? `${item.name} 延迟 ${result.latency_ms} ms` : `${item.name} 探测失败`);
-      await load();
-      await metrics.refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "节点探测失败");
+    } finally {
+      setProbingNodeIDs((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
     }
   }
 
   async function probeBatch() {
-    if (items.length === 0) {
+    const candidates = items.filter((item) => item.enabled);
+    if (candidates.length === 0) {
       return;
     }
-    try {
-      const result = await run((token) => api.nodes.probeBatch(token, items.map((item) => item.id), true));
-      setProbeResults(Object.fromEntries(result.map((item) => [item.node_id, item])));
-      toast.success(`批量探测完成，共 ${result.length} 个节点`);
-      await load();
-      await metrics.refresh();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "批量探测失败");
-    }
+    setProbingNodeIDs((current) => ({
+      ...current,
+      ...Object.fromEntries(candidates.map((item) => [item.id, true])),
+    }));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const results: ProbeBatchResult[] = [];
+    await Promise.all(
+      candidates.map(async (item) => {
+        try {
+          const result = await run((token) => api.nodes.probe(token, item.id, true));
+          const batchResult = {
+            node_id: item.id,
+            ...result,
+          };
+          results.push(batchResult);
+          setProbeResults((current) => ({
+            ...current,
+            [item.id]: batchResult,
+          }));
+          applyProbeResult(item.id, batchResult);
+        } catch (error) {
+          const failedResult = {
+            node_id: item.id,
+            success: false,
+            test_url: "",
+            error_message: error instanceof Error ? error.message : "节点探测失败",
+            cached: false,
+          };
+          setProbeResults((current) => ({
+            ...current,
+            [item.id]: failedResult,
+          }));
+          applyProbeResult(item.id, failedResult);
+        } finally {
+          setProbingNodeIDs((current) => {
+            const next = { ...current };
+            delete next[item.id];
+            return next;
+          });
+        }
+      }),
+    );
+    toast.success(`批量探测完成，共 ${results.length} 个节点`);
   }
 
   return (
@@ -235,7 +320,7 @@ export function NodesPage() {
                 <h1 className="text-4xl font-semibold tracking-tight text-white">节点池</h1>
               </div>
               <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-sm font-medium">
-                <InlineStat label="可用节点" tone="text-emerald-300" value={`${healthyCount}`} />
+                <InlineStat label="可用节点" tone="text-emerald-300" value={`${availableCount}`} />
                 <InlineStat label="不可用节点" tone="text-rose-300" value={`${unavailableCount}`} />
                 <InlineStat label="已启用节点" tone="text-amber-200" value={`${enabledCount}`} />
               </div>
@@ -332,7 +417,7 @@ export function NodesPage() {
                     导入节点
                   </Button>
                 }
-                description="没有匹配节点。请先导入节点或刷新订阅，再回来查看节点池。"
+                description="没有匹配节点, 请先导入节点或刷新订阅，再回来查看节点池"
                 title="节点池为空"
               />
             ) : (
@@ -340,7 +425,9 @@ export function NodesPage() {
                 emptyMessage="暂无节点"
                 items={filtered}
                 mode={viewMode}
+                onProbe={(item) => void probeSingle(item as NodeView)}
                 onSelect={(item) => setSelected(item as NodeView)}
+                probeStates={probeStates}
                 selectedId={selected?.id}
               />
             )}
@@ -371,7 +458,7 @@ export function NodesPage() {
                 <Input onChange={(event) => setForm((current) => ({ ...current, serverPort: event.target.value }))} value={form.serverPort} />
               </Field>
             </InlineFields>
-            <Field error={errors.credential} hint="例如 trojan/password、vmess uuid 等 JSON 字符串。" label="认证信息">
+            <Field error={errors.credential} hint="例如 trojan/password、vmess uuid 等 JSON 字符串" label="认证信息">
               <Textarea onChange={(event) => setForm((current) => ({ ...current, credential: event.target.value }))} value={form.credential} />
             </Field>
             {editing ? (
