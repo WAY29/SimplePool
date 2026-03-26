@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/WAY29/SimplePool/internal/domain"
@@ -147,7 +148,7 @@ func NewService(options Options) *Service {
 		now = time.Now
 	}
 	if options.ProbeCacheTTL <= 0 {
-		options.ProbeCacheTTL = 30 * time.Second
+		options.ProbeCacheTTL = 5 * time.Minute
 	}
 
 	return &Service{
@@ -316,16 +317,35 @@ func (s *Service) ProbeByID(ctx context.Context, id string, force bool) (ProbeRe
 }
 
 func (s *Service) ProbeBatch(ctx context.Context, ids []string, force bool) ([]ProbeBatchResult, error) {
-	results := make([]ProbeBatchResult, 0, len(ids))
-	for _, id := range ids {
-		result, err := s.ProbeByID(ctx, id, force)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, ProbeBatchResult{
-			NodeID:      id,
-			ProbeResult: result,
-		})
+	results := make([]ProbeBatchResult, len(ids))
+	var wg sync.WaitGroup
+	var firstErr error
+	var firstErrMu sync.Mutex
+
+	for index, id := range ids {
+		wg.Add(1)
+		go func(index int, id string) {
+			defer wg.Done()
+
+			result, err := s.ProbeByID(ctx, id, force)
+			if err != nil {
+				firstErrMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				firstErrMu.Unlock()
+				return
+			}
+			results[index] = ProbeBatchResult{
+				NodeID:      id,
+				ProbeResult: result,
+			}
+		}(index, id)
+	}
+
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	return results, nil
 }

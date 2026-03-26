@@ -3,6 +3,7 @@ package node_test
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,16 +119,16 @@ func TestNodeServiceImportAndProbeCaching(t *testing.T) {
 	if second.Cached != true {
 		t.Fatalf("Cached = %v, want true", second.Cached)
 	}
-	if prober.calls != 1 {
-		t.Fatalf("prober.calls = %d, want 1", prober.calls)
+	if prober.CallCount() != 1 {
+		t.Fatalf("prober.calls = %d, want 1", prober.CallCount())
 	}
 
 	_, err = service.ProbeByID(ctx, imported[0].ID, true)
 	if err != nil {
 		t.Fatalf("ProbeByID(force) error = %v", err)
 	}
-	if prober.calls != 2 {
-		t.Fatalf("prober.calls = %d, want 2 after force", prober.calls)
+	if prober.CallCount() != 2 {
+		t.Fatalf("prober.calls = %d, want 2 after force", prober.CallCount())
 	}
 }
 
@@ -181,6 +182,75 @@ func TestNodeServiceBatchProbeUpdatesStatus(t *testing.T) {
 	}
 }
 
+func TestNodeServiceProbeBatchRunsConcurrently(t *testing.T) {
+	ctx := context.Background()
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	prober := &fakeProber{
+		started: started,
+		blocks: map[string]chan struct{}{
+			"good": release,
+			"bad":  release,
+		},
+		resultsByNode: map[string]node.ProbeResult{
+			"good": {Success: true, LatencyMS: 30, TestURL: "https://cloudflare.com/cdn-cgi/trace"},
+			"bad":  {Success: false, ErrorMessage: "timeout", TestURL: "https://cloudflare.com/cdn-cgi/trace"},
+		},
+	}
+	service := newNodeServiceWithProber(t, prober)
+
+	good, err := service.CreateManual(ctx, node.CreateManualInput{
+		Name: "good", Protocol: "vmess", Server: "1.1.1.1", ServerPort: 443,
+		TransportJSON: `{}`, TLSJSON: `{}`, RawPayloadJSON: `{}`, Credential: []byte(`{"uuid":"g"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateManual() good error = %v", err)
+	}
+	bad, err := service.CreateManual(ctx, node.CreateManualInput{
+		Name: "bad", Protocol: "trojan", Server: "2.2.2.2", ServerPort: 443,
+		TransportJSON: `{}`, TLSJSON: `{}`, RawPayloadJSON: `{}`, Credential: []byte(`{"password":"b"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateManual() bad error = %v", err)
+	}
+
+	resultCh := make(chan []node.ProbeBatchResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		results, probeErr := service.ProbeBatch(ctx, []string{good.ID, bad.ID}, true)
+		if probeErr != nil {
+			errCh <- probeErr
+			return
+		}
+		resultCh <- results
+	}()
+
+	seen := make(map[string]struct{}, 2)
+	for len(seen) < 2 {
+		select {
+		case name := <-started:
+			seen[name] = struct{}{}
+		case probeErr := <-errCh:
+			t.Fatalf("ProbeBatch() error = %v", probeErr)
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("ProbeBatch() did not start probes concurrently")
+		}
+	}
+
+	close(release)
+
+	select {
+	case results := <-resultCh:
+		if len(results) != 2 {
+			t.Fatalf("len(results) = %d, want 2", len(results))
+		}
+	case probeErr := <-errCh:
+		t.Fatalf("ProbeBatch() error = %v", probeErr)
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("ProbeBatch() did not finish after releasing probes")
+	}
+}
+
 func newNodeService(t *testing.T) *node.Service {
 	t.Helper()
 	return newNodeServiceWithProber(t, &fakeProber{
@@ -225,17 +295,46 @@ func newNodeServiceWithProber(t *testing.T, prober node.Prober) *node.Service {
 }
 
 type fakeProber struct {
+	mu            sync.Mutex
 	calls         int
 	result        node.ProbeResult
 	resultsByNode map[string]node.ProbeResult
+	started       chan string
+	blocks        map[string]chan struct{}
 }
 
 func (f *fakeProber) Probe(ctx context.Context, target node.ProbeTarget) (node.ProbeResult, error) {
+	f.mu.Lock()
 	f.calls++
-	if f.resultsByNode != nil {
-		if result, ok := f.resultsByNode[target.Name]; ok {
-			return result, nil
+	started := f.started
+	block := f.blocks[target.Name]
+	resultsByNode := f.resultsByNode
+	result := f.result
+	f.mu.Unlock()
+
+	if started != nil {
+		select {
+		case started <- target.Name:
+		default:
 		}
 	}
-	return f.result, nil
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return node.ProbeResult{}, ctx.Err()
+		}
+	}
+	if resultsByNode != nil {
+		if item, ok := resultsByNode[target.Name]; ok {
+			return item, nil
+		}
+	}
+	return result, nil
+}
+
+func (f *fakeProber) CallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }

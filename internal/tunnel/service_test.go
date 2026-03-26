@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,6 +56,7 @@ func TestTunnelServiceCreateStopStartAndDelete(t *testing.T) {
 		t.Fatalf("runtime selector all = %v, want enabled group snapshot", runtimeState.all)
 	}
 
+	waitForTunnelSamples(t, ctx, deps.repos, created.ID, 2)
 	samples, err := deps.repos.LatencySamples.ListByTunnelID(ctx, created.ID, 10)
 	if err != nil {
 		t.Fatalf("LatencySamples.ListByTunnelID() error = %v", err)
@@ -122,6 +124,7 @@ func TestTunnelServiceRefreshFailureKeepsOldRuntimeAndMarksDegraded(t *testing.T
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	advanceTunnelClock(deps.now, 6*time.Minute)
 
 	deps.prober.results["node-hk-fast"] = node.ProbeResult{
 		Success:      false,
@@ -224,6 +227,7 @@ func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *
 	}); err != nil {
 		t.Fatalf("Update() second error = %v", err)
 	}
+	advanceTunnelClock(deps.now, 6*time.Minute)
 
 	deps.prober.results["node-hk-fast"] = node.ProbeResult{
 		Success:   true,
@@ -235,8 +239,16 @@ func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *
 		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
 		LatencyMS: 20,
 	}
+	hkFastRelease := make(chan struct{})
+	jpSlowRelease := make(chan struct{})
+	deps.prober.blocks = map[string]chan struct{}{
+		"node-hk-fast": hkFastRelease,
+		"node-jp-slow": jpSlowRelease,
+	}
 
 	refreshed, err := service.Refresh(ctx, created.ID)
+	close(hkFastRelease)
+	close(jpSlowRelease)
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
 	}
@@ -285,6 +297,100 @@ func TestTunnelServiceCreateFailsWithoutAvailableNodesAndRollsBack(t *testing.T)
 	}
 }
 
+func TestTunnelServiceCreateUsesFirstSuccessfulProbeAndCachesBackgroundResults(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	firstProbeRelease := make(chan struct{})
+	backgroundRelease := make(chan struct{})
+	deps.prober.results = map[string]node.ProbeResult{
+		"node-hk-fast": {Success: true, LatencyMS: 10, TestURL: "https://cloudflare.com/cdn-cgi/trace"},
+		"node-jp-slow": {Success: true, LatencyMS: 30, TestURL: "https://cloudflare.com/cdn-cgi/trace"},
+	}
+	deps.prober.blocks = map[string]chan struct{}{
+		"node-hk-fast": firstProbeRelease,
+		"node-jp-slow": backgroundRelease,
+	}
+	deps.prober.started = make(chan string, 2)
+
+	type createResult struct {
+		view *tunnel.View
+		err  error
+	}
+	resultCh := make(chan createResult, 1)
+	go func() {
+		view, err := service.Create(ctx, tunnel.CreateInput{
+			Name:    "proxy-a",
+			GroupID: groupID,
+		})
+		resultCh <- createResult{view: view, err: err}
+	}()
+
+	waitForProbeStarts(t, deps.prober.started, "node-hk-fast", "node-jp-slow")
+	close(firstProbeRelease)
+
+	var created *tunnel.View
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("Create() error = %v", result.err)
+		}
+		created = result.view
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Create() did not return after first successful probe")
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("CurrentNodeID = %v, want node-hk-fast", created.CurrentNodeID)
+	}
+
+	samples, err := deps.repos.LatencySamples.ListByTunnelID(ctx, created.ID, 10)
+	if err != nil {
+		t.Fatalf("LatencySamples.ListByTunnelID() error = %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("len(samples) before background release = %d, want 1", len(samples))
+	}
+
+	close(backgroundRelease)
+	waitForTunnelSamples(t, ctx, deps.repos, created.ID, 2)
+}
+
+func TestTunnelServiceCreateReusesRecentSuccessfulCache(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	checkedAt := deps.now().UTC()
+	latency := int64(12)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-hk-fast",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &latency,
+		Success:   true,
+		CreatedAt: checkedAt,
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() error = %v", err)
+	}
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("CurrentNodeID = %v, want node-hk-fast from cache", created.CurrentNodeID)
+	}
+	if deps.prober.CallCount() != 0 {
+		t.Fatalf("prober.calls = %d, want 0 when cache is reused", deps.prober.CallCount())
+	}
+}
+
 type tunnelServiceDeps struct {
 	repos        *sqlite.Repositories
 	groupService *group.Service
@@ -310,8 +416,11 @@ func newTunnelService(t *testing.T) (*tunnel.Service, *tunnelServiceDeps) {
 
 	repos := sqlite.NewRepositories(db)
 	base := time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
 	var tick int
 	now := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
 		value := base.Add(time.Duration(tick) * time.Second)
 		tick++
 		return value
@@ -343,6 +452,7 @@ func newTunnelService(t *testing.T) (*tunnel.Service, *tunnelServiceDeps) {
 		Nodes:          repos.Nodes,
 		Cipher:         cipher,
 		Prober:         prober,
+		ProbeCacheTTL:  5 * time.Minute,
 		Runtime:        runtimeManager,
 		PortAllocator:  singbox.NewPortAllocator(),
 		Renderer:       singbox.NewConfigRenderer(),
@@ -449,18 +559,43 @@ func seedTunnelNodes(t *testing.T, ctx context.Context, repos *sqlite.Repositori
 }
 
 type fakeTunnelProber struct {
+	mu      sync.Mutex
+	calls   int
 	results map[string]node.ProbeResult
 	err     error
+	started chan string
+	blocks  map[string]chan struct{}
 }
 
 func (f *fakeTunnelProber) Probe(ctx context.Context, target node.ProbeTarget) (node.ProbeResult, error) {
-	if f.err != nil {
-		return node.ProbeResult{}, f.err
+	f.mu.Lock()
+	f.calls++
+	started := f.started
+	block := f.blocks[target.ID]
+	results := f.results
+	err := f.err
+	f.mu.Unlock()
+
+	if started != nil {
+		select {
+		case started <- target.ID:
+		default:
+		}
 	}
-	if result, ok := f.results[target.ID]; ok {
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return node.ProbeResult{}, ctx.Err()
+		}
+	}
+	if err != nil {
+		return node.ProbeResult{}, err
+	}
+	if result, ok := results[target.ID]; ok {
 		return result, nil
 	}
-	if result, ok := f.results[target.Name]; ok {
+	if result, ok := results[target.Name]; ok {
 		return result, nil
 	}
 	return node.ProbeResult{
@@ -468,6 +603,56 @@ func (f *fakeTunnelProber) Probe(ctx context.Context, target node.ProbeTarget) (
 		LatencyMS: 40,
 		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
 	}, nil
+}
+
+func (f *fakeTunnelProber) CallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func waitForProbeStarts(t *testing.T, started <-chan string, wants ...string) {
+	t.Helper()
+	pending := make(map[string]struct{}, len(wants))
+	for _, want := range wants {
+		pending[want] = struct{}{}
+	}
+	timeout := time.After(200 * time.Millisecond)
+	for len(pending) > 0 {
+		select {
+		case got := <-started:
+			delete(pending, got)
+		case <-timeout:
+			t.Fatalf("probes %v did not all start", wants)
+		}
+	}
+}
+
+func waitForTunnelSamples(t *testing.T, ctx context.Context, repos *sqlite.Repositories, tunnelID string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		items, err := repos.LatencySamples.ListByTunnelID(ctx, tunnelID, 10)
+		if err != nil {
+			t.Fatalf("LatencySamples.ListByTunnelID() error = %v", err)
+		}
+		if len(items) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	items, err := repos.LatencySamples.ListByTunnelID(ctx, tunnelID, 10)
+	if err != nil {
+		t.Fatalf("LatencySamples.ListByTunnelID() error = %v", err)
+	}
+	t.Fatalf("len(samples) = %d, want %d", len(items), want)
+}
+
+func advanceTunnelClock(now func() time.Time, duration time.Duration) {
+	steps := int(duration / time.Second)
+	for range steps {
+		_ = now()
+	}
 }
 
 type fakeRuntimeManager struct {

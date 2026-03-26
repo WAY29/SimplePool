@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/WAY29/SimplePool/internal/domain"
@@ -66,6 +67,7 @@ type Options struct {
 	LogLevel       string
 	Cipher         Cipher
 	Prober         Prober
+	ProbeCacheTTL  time.Duration
 	Runtime        RuntimeManager
 	PortAllocator  PortAllocator
 	Renderer       Renderer
@@ -83,6 +85,7 @@ type Service struct {
 	logLevel       string
 	cipher         Cipher
 	prober         Prober
+	probeCacheTTL  time.Duration
 	runtime        RuntimeManager
 	portAllocator  PortAllocator
 	renderer       Renderer
@@ -138,15 +141,31 @@ type authPayload struct {
 }
 
 type preparedRuntime struct {
-	config       []byte
-	currentNode  *domain.Node
-	selectorTags []string
+	config           []byte
+	currentNode      *domain.Node
+	selectorTags     []string
+	cancelBackground context.CancelFunc
+	backgroundDone   <-chan struct{}
+}
+
+type runtimeCandidate struct {
+	item        *domain.Node
+	target      node.ProbeTarget
+	runtimeNode singbox.RuntimeNode
+}
+
+type probeOutcome struct {
+	item   *domain.Node
+	result node.ProbeResult
 }
 
 func NewService(options Options) *Service {
 	now := options.Now
 	if now == nil {
 		now = time.Now
+	}
+	if options.ProbeCacheTTL <= 0 {
+		options.ProbeCacheTTL = 5 * time.Minute
 	}
 	if options.PortAllocator == nil {
 		options.PortAllocator = singbox.NewPortAllocator()
@@ -171,6 +190,7 @@ func NewService(options Options) *Service {
 		logLevel:       options.LogLevel,
 		cipher:         options.Cipher,
 		prober:         options.Prober,
+		probeCacheTTL:  options.ProbeCacheTTL,
 		runtime:        options.Runtime,
 		portAllocator:  options.PortAllocator,
 		renderer:       options.Renderer,
@@ -283,11 +303,13 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*View, error) 
 		return nil, err
 	}
 	if err := s.releaseReservedPorts(pair); err != nil {
+		prepared.stopBackground()
 		return nil, err
 	}
 	releaseReserved = false
 
 	if err := s.runtime.Start(ctx, entity.ID, layout, prepared.config); err != nil {
+		prepared.stopBackground()
 		return nil, err
 	}
 
@@ -296,6 +318,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*View, error) 
 	entity.LastRefreshError = ""
 	entity.UpdatedAt = s.now().UTC()
 	if err := s.tunnels.Update(ctx, entity); err != nil {
+		prepared.stopBackground()
 		_ = s.runtime.Delete(ctx, entity.ID)
 		return nil, err
 	}
@@ -380,6 +403,7 @@ func (s *Service) Start(ctx context.Context, id string) (*View, error) {
 		return nil, err
 	}
 	if err := s.runtime.Start(ctx, current.ID, layout, prepared.config); err != nil {
+		prepared.stopBackground()
 		return nil, err
 	}
 
@@ -388,6 +412,7 @@ func (s *Service) Start(ctx context.Context, id string) (*View, error) {
 	current.LastRefreshError = ""
 	current.UpdatedAt = s.now().UTC()
 	if err := s.tunnels.Update(ctx, current); err != nil {
+		prepared.stopBackground()
 		_ = s.runtime.Stop(ctx, current.ID)
 		return nil, err
 	}
@@ -448,6 +473,7 @@ func (s *Service) Refresh(ctx context.Context, id string) (*View, error) {
 		targetTag := outboundTag(prepared.currentNode.ID)
 		if selector.Now != targetTag {
 			if err := s.runtime.SwitchSelector(ctx, current.ID, current.ControllerPort, controllerSecret, targetTag); err != nil {
+				prepared.stopBackground()
 				return nil, s.markRefreshFailure(ctx, current, err)
 			}
 		}
@@ -458,6 +484,7 @@ func (s *Service) Refresh(ctx context.Context, id string) (*View, error) {
 		current.LastRefreshError = ""
 		current.UpdatedAt = now
 		if err := s.tunnels.Update(ctx, current); err != nil {
+			prepared.stopBackground()
 			return nil, err
 		}
 		s.recordEvent(ctx, current.ID, "tunnel.refreshed", map[string]any{
@@ -473,6 +500,7 @@ func (s *Service) Refresh(ctx context.Context, id string) (*View, error) {
 		GroupID:          current.GroupID,
 		ListenHost:       current.ListenHost,
 		ProxyAuth:        proxyAuth,
+		Prepared:         prepared,
 		RecordEvent:      "tunnel.refreshed",
 		FailureEvent:     "tunnel.refresh_failed",
 		FailureStatus:    domain.TunnelStatusDegraded,
@@ -542,6 +570,7 @@ type rebuildInput struct {
 	GroupID          string
 	ListenHost       string
 	ProxyAuth        *singbox.ProxyAuth
+	Prepared         *preparedRuntime
 	RecordEvent      string
 	FailureEvent     string
 	FailureStatus    string
@@ -560,17 +589,22 @@ func (s *Service) rebuildTunnel(ctx context.Context, current *domain.Tunnel, inp
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := s.prepareRuntime(ctx, current.ID, input.GroupID, layout, input.ListenHost, current.ListenPort, current.ControllerPort, controllerSecret, input.ProxyAuth)
+	prepared := input.Prepared
+	if prepared == nil {
+		prepared, err = s.prepareRuntime(ctx, current.ID, input.GroupID, layout, input.ListenHost, current.ListenPort, current.ControllerPort, controllerSecret, input.ProxyAuth)
+	}
 	if err != nil {
 		s.recordEvent(ctx, current.ID, input.FailureEvent, map[string]any{"error": err.Error()})
 		return nil, err
 	}
 
 	if err := s.runtime.Stop(ctx, current.ID); err != nil {
+		prepared.stopBackground()
 		s.recordEvent(ctx, current.ID, input.FailureEvent, map[string]any{"error": err.Error()})
 		return nil, err
 	}
 	if err := s.runtime.Start(ctx, current.ID, layout, prepared.config); err != nil {
+		prepared.stopBackground()
 		restartErr := s.runtime.Start(ctx, current.ID, layout, oldConfig)
 		if restartErr != nil {
 			err = errors.Join(err, restartErr)
@@ -607,6 +641,7 @@ func (s *Service) rebuildTunnel(ctx context.Context, current *domain.Tunnel, inp
 	}
 	current.UpdatedAt = now
 	if err := s.tunnels.Update(ctx, current); err != nil {
+		prepared.stopBackground()
 		_ = s.runtime.Stop(ctx, current.ID)
 		_ = s.runtime.Start(ctx, current.ID, layout, oldConfig)
 		*current = previous
@@ -627,46 +662,80 @@ func (s *Service) prepareRuntime(ctx context.Context, tunnelID, groupID string, 
 		return nil, err
 	}
 
+	candidates := make([]runtimeCandidate, 0, len(nodes))
 	runtimeNodes := make([]singbox.RuntimeNode, 0, len(nodes))
 	selectorTags := make([]string, 0, len(nodes))
-	var currentNode *domain.Node
-	var bestLatency int64
+	var cachedNode *domain.Node
+	var cachedLatency int64
 	for _, item := range nodes {
 		target, runtimeNode, err := s.buildRuntimeNode(item)
 		if err != nil {
 			return nil, err
 		}
-		result, probeErr := s.prober.Probe(ctx, target)
-		if probeErr != nil {
-			result = node.ProbeResult{
-				Success:      false,
-				TestURL:      "",
-				ErrorMessage: probeErr.Error(),
-			}
-		}
-		checkedAt := s.now().UTC()
-		if result.TestURL == "" {
-			result.TestURL = "https://cloudflare.com/cdn-cgi/trace"
-		}
-		if err := s.recordProbe(ctx, tunnelID, item, result, checkedAt); err != nil {
+		if cached, ok, err := s.cachedSuccessfulProbeResult(ctx, item.ID); err != nil {
 			return nil, err
+		} else if ok && (cachedNode == nil || cached.LatencyMS < cachedLatency) {
+			cachedNode = item
+			cachedLatency = cached.LatencyMS
 		}
-
+		candidates = append(candidates, runtimeCandidate{
+			item:        item,
+			target:      target,
+			runtimeNode: runtimeNode,
+		})
 		runtimeNodes = append(runtimeNodes, runtimeNode)
 		selectorTags = append(selectorTags, outboundTag(item.ID))
-		if !result.Success {
-			continue
-		}
-		if currentNode == nil || result.LatencyMS < bestLatency {
-			bestLatency = result.LatencyMS
-			currentNode = item
-		}
 	}
 
-	if len(runtimeNodes) == 0 || currentNode == nil {
+	if len(runtimeNodes) == 0 {
 		return nil, ErrNoAvailableNodes
 	}
+	if cachedNode != nil {
+		return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, selectorTags, cachedNode, nil, nil)
+	}
+	return s.prepareRuntimeWithConcurrentProbes(ctx, tunnelID, layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, candidates, runtimeNodes, selectorTags)
+}
 
+func (s *Service) prepareRuntimeWithConcurrentProbes(ctx context.Context, tunnelID string, layout singbox.RuntimeLayout, listenHost string, listenPort, controllerPort int, controllerSecret string, proxyAuth *singbox.ProxyAuth, candidates []runtimeCandidate, runtimeNodes []singbox.RuntimeNode, selectorTags []string) (*preparedRuntime, error) {
+	probeCtx, cancel := context.WithCancel(context.Background())
+	successCh := make(chan probeOutcome, 1)
+	errCh := make(chan error, 1)
+	doneCh := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for _, candidate := range candidates {
+		wg.Add(1)
+		go func(candidate runtimeCandidate) {
+			defer wg.Done()
+			s.probeCandidate(probeCtx, tunnelID, candidate, successCh, errCh)
+		}(candidate)
+	}
+
+	go func() {
+		wg.Wait()
+		close(doneCh)
+	}()
+
+	for {
+		select {
+		case outcome := <-successCh:
+			return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, selectorTags, outcome.item, cancel, doneCh)
+		case err := <-errCh:
+			cancel()
+			waitForProbeDrain(doneCh)
+			return nil, err
+		case <-doneCh:
+			cancel()
+			return nil, ErrNoAvailableNodes
+		case <-ctx.Done():
+			cancel()
+			waitForProbeDrain(doneCh)
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (s *Service) renderPreparedRuntime(layout singbox.RuntimeLayout, listenHost string, listenPort, controllerPort int, controllerSecret string, proxyAuth *singbox.ProxyAuth, runtimeNodes []singbox.RuntimeNode, selectorTags []string, currentNode *domain.Node, cancelBackground context.CancelFunc, backgroundDone <-chan struct{}) (*preparedRuntime, error) {
 	config, err := s.renderer.Render(singbox.RenderInput{
 		ListenHost:       listenHost,
 		ListenPort:       listenPort,
@@ -679,14 +748,78 @@ func (s *Service) prepareRuntime(ctx context.Context, tunnelID, groupID string, 
 		CurrentNodeID:    currentNode.ID,
 	})
 	if err != nil {
+		if cancelBackground != nil {
+			cancelBackground()
+			waitForProbeDrain(backgroundDone)
+		}
 		return nil, err
 	}
 
 	return &preparedRuntime{
-		config:       config,
-		currentNode:  currentNode,
-		selectorTags: selectorTags,
+		config:           config,
+		currentNode:      currentNode,
+		selectorTags:     selectorTags,
+		cancelBackground: cancelBackground,
+		backgroundDone:   backgroundDone,
 	}, nil
+}
+
+func (s *Service) probeCandidate(ctx context.Context, tunnelID string, candidate runtimeCandidate, successCh chan<- probeOutcome, errCh chan<- error) {
+	result, probeErr := s.prober.Probe(ctx, candidate.target)
+	if probeErr != nil {
+		result = node.ProbeResult{
+			Success:      false,
+			TestURL:      "",
+			ErrorMessage: probeErr.Error(),
+		}
+	}
+	checkedAt := s.now().UTC()
+	if result.TestURL == "" {
+		result.TestURL = "https://cloudflare.com/cdn-cgi/trace"
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if err := s.recordProbe(ctx, tunnelID, candidate.item, result, checkedAt); err != nil {
+		select {
+		case errCh <- err:
+		default:
+			s.logError("record tunnel probe failed", "tunnel_id", tunnelID, "node_id", candidate.item.ID, "error", err)
+		}
+		return
+	}
+	if !result.Success {
+		return
+	}
+	select {
+	case successCh <- probeOutcome{item: candidate.item, result: result}:
+	default:
+	}
+}
+
+func (s *Service) cachedSuccessfulProbeResult(ctx context.Context, nodeID string) (node.ProbeResult, bool, error) {
+	samples, err := s.latencySamples.ListByNodeID(ctx, nodeID, 1)
+	if err != nil {
+		return node.ProbeResult{}, false, err
+	}
+	if len(samples) == 0 {
+		return node.ProbeResult{}, false, nil
+	}
+	latest := samples[0]
+	if !latest.Success || s.now().UTC().Sub(latest.CreatedAt) > s.probeCacheTTL {
+		return node.ProbeResult{}, false, nil
+	}
+	result := node.ProbeResult{
+		Success:      true,
+		TestURL:      latest.TestURL,
+		ErrorMessage: latest.ErrorMessage,
+		Cached:       true,
+		CheckedAt:    &latest.CreatedAt,
+	}
+	if latest.LatencyMS != nil {
+		result.LatencyMS = *latest.LatencyMS
+	}
+	return result, true, nil
 }
 
 func (s *Service) loadGroupSnapshot(ctx context.Context, groupID string) ([]*domain.Node, error) {
@@ -906,6 +1039,24 @@ func toView(item *domain.Tunnel) *View {
 
 func outboundTag(nodeID string) string {
 	return "node-" + nodeID
+}
+
+func (p *preparedRuntime) stopBackground() {
+	if p == nil || p.cancelBackground == nil {
+		return
+	}
+	p.cancelBackground()
+	waitForProbeDrain(p.backgroundDone)
+}
+
+func waitForProbeDrain(done <-chan struct{}) {
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+	}
 }
 
 func sameStringSet(left, right []string) bool {

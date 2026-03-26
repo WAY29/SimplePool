@@ -48,6 +48,7 @@ type Dependencies struct {
 
 func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependencies) (*App, error) {
 	const op = "app.New"
+	const probeCacheTTL = 5 * time.Minute
 
 	if err := ensureDirectories(cfg.Paths); err != nil {
 		return nil, apperr.Wrap(apperr.CodeRuntime, op, err)
@@ -93,7 +94,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 		Cipher:         cipher,
 		Prober:         prober,
 		Now:            now,
-		ProbeCacheTTL:  30 * time.Second,
+		ProbeCacheTTL:  probeCacheTTL,
 	})
 	subscriptionService := subscription.NewService(subscription.Options{
 		SubscriptionSources: repos.SubscriptionSources,
@@ -103,7 +104,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 		Fetcher:             fetcher,
 		Prober:              prober,
 		Now:                 now,
-		ProbeCacheTTL:       30 * time.Second,
+		ProbeCacheTTL:       probeCacheTTL,
 	})
 	groupService := group.NewService(group.Options{
 		Groups: repos.Groups,
@@ -129,6 +130,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 		LogLevel:       cfg.LogLevel,
 		Cipher:         cipher,
 		Prober:         prober,
+		ProbeCacheTTL:  probeCacheTTL,
 		Runtime:        runtimeManager,
 		RuntimeRoot:    cfg.Paths.RuntimeDir,
 		Now:            now,
