@@ -20,6 +20,7 @@ const buttonVariants = cva(
         sm: "h-9 px-3",
         default: "h-11 px-4",
         lg: "h-12 px-5 text-base",
+        icon: "h-11 w-11 p-0",
       },
     },
     defaultVariants: {
@@ -49,4 +50,27 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 );
 Button.displayName = "Button";
 
-export { Button, buttonVariants };
+type IconButtonProps = Omit<ButtonProps, "children"> & {
+  children: React.ReactNode;
+  label: string;
+};
+
+const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
+  ({ children, className, label, size = "icon", ...props }, ref) => {
+    return (
+      <Button
+        aria-label={label}
+        className={cn("rounded-2xl", className)}
+        ref={ref}
+        size={size}
+        title={label}
+        {...props}
+      >
+        {children}
+      </Button>
+    );
+  },
+);
+IconButton.displayName = "IconButton";
+
+export { Button, IconButton, buttonVariants };

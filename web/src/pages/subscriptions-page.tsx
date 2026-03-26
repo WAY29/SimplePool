@@ -1,10 +1,10 @@
 import { useDeferredValue, useEffect, useState } from "react";
-import { LoaderCircle, Plus, Radar, RefreshCw, Trash2 } from "lucide-react";
+import { Check, LoaderCircle, Plus, Radar, RefreshCw, SquarePen, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, EmptyState, PanelTitle } from "@/components/layout/app-shell";
 import { NodeCollectionView, NodeViewModeSwitch } from "@/components/nodes/node-collection-view";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, InlineFields } from "@/components/ui/form";
@@ -105,6 +105,7 @@ export function SubscriptionsPage() {
       },
     ]),
   );
+  const submitLabel = submitting ? "提交中..." : editing ? "保存修改" : "创建订阅源";
 
   function openCreate() {
     setEditing(null);
@@ -270,10 +271,9 @@ export function SubscriptionsPage() {
           <CardHeader className="space-y-4">
             <PanelTitle eyebrow="Subscriptions" title="订阅源列表" />
             <Input onChange={(event) => setSearch(event.target.value)} placeholder="搜索名称或错误..." value={search} />
-            <Button onClick={openCreate}>
+            <IconButton label="新建订阅源" onClick={openCreate}>
               <Plus className="h-4 w-4" />
-              新建订阅源
-            </Button>
+            </IconButton>
           </CardHeader>
           <CardContent className="space-y-3">
             {loading ? (
@@ -282,7 +282,15 @@ export function SubscriptionsPage() {
                 加载订阅中...
               </div>
             ) : filtered.length === 0 ? (
-              <EmptyState title="没有订阅源" description="新增订阅链接后，这里会显示刷新状态和失败信息" action={<Button onClick={openCreate}>添加订阅源</Button>} />
+              <EmptyState
+                action={
+                  <IconButton label="添加订阅源" onClick={openCreate}>
+                    <Plus className="h-4 w-4" />
+                  </IconButton>
+                }
+                description="新增订阅链接后，这里会显示刷新状态和失败信息"
+                title="没有订阅源"
+              />
             ) : (
               filtered.map((item) => (
                 <button
@@ -321,29 +329,37 @@ export function SubscriptionsPage() {
                     <CardTitle className="text-3xl">{selected.name}</CardTitle>
                     <Badge tone={subscriptionTone(selected)}>{subscriptionState(selected)}</Badge>
                   </div>
-                  <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                    已移除 URL 存储卡片、字段表和默认状态块。这里只保留时间信息与主操作。
-                  </p>
                   <div className="grid max-w-[520px] gap-3 sm:grid-cols-2">
                     <InfoBlock label="创建时间" value={formatDateTime(selected.created_at)} />
                     <InfoBlock label="更新时间" value={formatDateTime(selected.updated_at)} />
                   </div>
                 </div>
 
-                <div className="grid gap-3 xl:justify-items-end">
-                  <Button onClick={() => void refresh(selected)} size="lg">
+                <div className="flex items-center gap-2 self-start xl:justify-end">
+                  <IconButton
+                    className="h-10 w-10 rounded-2xl p-0"
+                    label="立即刷新"
+                    onClick={() => void refresh(selected)}
+                    variant="secondary"
+                  >
                     <RefreshCw className="h-4 w-4" />
-                    立即刷新
-                  </Button>
-                  <div className="flex flex-wrap gap-2 xl:justify-end">
-                    <Button onClick={() => openEdit(selected)} variant="secondary">
-                      编辑
-                    </Button>
-                    <Button onClick={() => void remove(selected)} variant="danger">
-                      <Trash2 className="h-4 w-4" />
-                      删除
-                    </Button>
-                  </div>
+                  </IconButton>
+                  <IconButton
+                    className="h-10 w-10 rounded-2xl p-0"
+                    label="编辑"
+                    onClick={() => openEdit(selected)}
+                    variant="secondary"
+                  >
+                    <SquarePen className="h-4 w-4" />
+                  </IconButton>
+                  <IconButton
+                    className="h-10 w-10 rounded-2xl p-0"
+                    label="删除"
+                    onClick={() => void remove(selected)}
+                    variant="danger"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </IconButton>
                 </div>
               </div>
             </CardHeader>
@@ -364,15 +380,14 @@ export function SubscriptionsPage() {
                   <div className="space-y-2">
                     <h3 className="text-2xl font-semibold text-white">订阅节点</h3>
                     <p className="text-sm text-[var(--muted-foreground)]">
-                      当前订阅共 {subscriptionNodes.length} 个节点，可用 {availableNodeCount} 个。
+                      共 {subscriptionNodes.length} 个节点  可用 {availableNodeCount} 个
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <NodeViewModeSwitch mode={viewMode} onChange={setViewMode} />
-                    <Button onClick={() => void probeSubscriptionNodes()} variant="secondary">
+                    <IconButton label="探测" onClick={() => void probeSubscriptionNodes()} variant="secondary">
                       <Radar className="h-4 w-4" />
-                      批量探测订阅节点
-                    </Button>
+                    </IconButton>
                   </div>
                 </div>
 
@@ -423,12 +438,12 @@ export function SubscriptionsPage() {
             </Field>
           </div>
           <DialogFooter>
-            <Button onClick={() => setShowForm(false)} variant="ghost">
-              取消
-            </Button>
-            <Button disabled={submitting} onClick={() => void submit()}>
-              {submitting ? "提交中..." : editing ? "保存修改" : "创建订阅源"}
-            </Button>
+            <IconButton label="取消" onClick={() => setShowForm(false)} variant="ghost">
+              <X className="h-4 w-4" />
+            </IconButton>
+            <IconButton disabled={submitting} label={submitLabel} onClick={() => void submit()}>
+              {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : editing ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            </IconButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

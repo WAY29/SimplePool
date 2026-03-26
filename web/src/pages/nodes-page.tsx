@@ -1,9 +1,9 @@
 import { useDeferredValue, useEffect, useState } from "react";
-import { Cable, Download, LoaderCircle, Radar, Trash2 } from "lucide-react";
+import { Check, Download, LoaderCircle, Plus, Radar, SquarePen, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, EmptyState } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/button";
 import {
   NodeCollectionView,
   NodeViewModeSwitch,
@@ -59,6 +59,8 @@ export function NodesPage() {
   const [probeResults, setProbeResults] = useState<Record<string, ProbeBatchResult>>({});
   const [probingNodeIDs, setProbingNodeIDs] = useState<Record<string, boolean>>({});
   const [viewMode, setViewMode] = usePersistedViewMode("simplepool.nodes.view_mode", "grid");
+  const submitLabel = submitting ? "提交中..." : editing ? "保存修改" : "创建节点";
+  const importLabel = submitting ? "导入中..." : "开始导入";
 
   function applyProbeResult(nodeID: string, result: { success: boolean; latency_ms?: number | null; checked_at?: string | null }) {
     setItems((current) =>
@@ -329,22 +331,22 @@ export function NodesPage() {
             <div className="flex w-full max-w-[760px] flex-col gap-3 xl:items-end">
               <div className="flex flex-wrap items-center gap-2 xl:justify-end">
                 <NodeViewModeSwitch mode={viewMode} onChange={setViewMode} />
-                <Button
-                  className="border-white/10 bg-white/5 px-4"
+                <IconButton
+                  className="border-white/10 bg-white/5"
+                  label="导入节点"
                   onClick={() => setShowImport(true)}
                   variant="secondary"
                 >
                   <Download className="h-4 w-4" />
-                  导入节点
-                </Button>
-                <Button
-                  className="border-white/10 bg-white/5 px-4"
+                </IconButton>
+                <IconButton
+                  className="border-white/10 bg-white/5"
+                  label="探测"
                   onClick={() => void probeBatch()}
                   variant="secondary"
                 >
                   <Radar className="h-4 w-4" />
-                  批量探测
-                </Button>
+                </IconButton>
               </div>
 
               <div className="w-full max-w-[360px]">
@@ -386,18 +388,15 @@ export function NodesPage() {
                 </div>
 
                 <div className="flex flex-wrap gap-2 xl:justify-end">
-                  <Button onClick={() => void probeSingle(selected)} size="lg">
+                  <IconButton label="立即探测" onClick={() => void probeSingle(selected)}>
                     <Radar className="h-4 w-4" />
-                    立即探测
-                  </Button>
-                  <Button onClick={() => openEdit(selected)} variant="secondary">
-                    <Cable className="h-4 w-4" />
-                    编辑节点
-                  </Button>
-                  <Button onClick={() => void remove(selected)} variant="danger">
+                  </IconButton>
+                  <IconButton label="编辑节点" onClick={() => openEdit(selected)} variant="secondary">
+                    <SquarePen className="h-4 w-4" />
+                  </IconButton>
+                  <IconButton label="删除" onClick={() => void remove(selected)} variant="danger">
                     <Trash2 className="h-4 w-4" />
-                    删除
-                  </Button>
+                  </IconButton>
                 </div>
               </div>
             </div>
@@ -412,10 +411,9 @@ export function NodesPage() {
             ) : filtered.length === 0 ? (
               <EmptyState
                 action={
-                  <Button onClick={() => setShowImport(true)} variant="secondary">
+                  <IconButton label="导入节点" onClick={() => setShowImport(true)} variant="secondary">
                     <Download className="h-4 w-4" />
-                    导入节点
-                  </Button>
+                  </IconButton>
                 }
                 description="没有匹配节点, 请先导入节点或刷新订阅，再回来查看节点池"
                 title="节点池为空"
@@ -487,12 +485,12 @@ export function NodesPage() {
             ) : null}
           </div>
           <DialogFooter>
-            <Button onClick={() => setShowForm(false)} variant="ghost">
-              取消
-            </Button>
-            <Button disabled={submitting} onClick={() => void submitForm()}>
-              {submitting ? "提交中..." : editing ? "保存修改" : "创建节点"}
-            </Button>
+            <IconButton label="取消" onClick={() => setShowForm(false)} variant="ghost">
+              <X className="h-4 w-4" />
+            </IconButton>
+            <IconButton disabled={submitting} label={submitLabel} onClick={() => void submitForm()}>
+              {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : editing ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            </IconButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -507,12 +505,12 @@ export function NodesPage() {
             <Textarea onChange={(event) => setImportPayload(event.target.value)} value={importPayload} />
           </Field>
           <DialogFooter>
-            <Button onClick={() => setShowImport(false)} variant="ghost">
-              取消
-            </Button>
-            <Button disabled={submitting} onClick={() => void submitImport()}>
-              {submitting ? "导入中..." : "开始导入"}
-            </Button>
+            <IconButton label="取消" onClick={() => setShowImport(false)} variant="ghost">
+              <X className="h-4 w-4" />
+            </IconButton>
+            <IconButton disabled={submitting} label={importLabel} onClick={() => void submitImport()}>
+              {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            </IconButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

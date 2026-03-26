@@ -1,8 +1,8 @@
-import { ShieldCheck, Workflow } from "lucide-react";
+import { LoaderCircle, LogIn, ShieldCheck, Workflow } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, InlineFields } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
@@ -106,9 +106,9 @@ export function LoginPage() {
                   {error}
                 </div>
               ) : null}
-              <Button disabled={submitting} size="lg" type="submit">
-                {submitting ? "登录中..." : "进入控制台"}
-              </Button>
+              <IconButton disabled={submitting} label={submitting ? "登录中..." : "进入控制台"} type="submit">
+                {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
+              </IconButton>
             </form>
           </CardContent>
         </Card>

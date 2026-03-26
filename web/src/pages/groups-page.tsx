@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { LoaderCircle, Plus, Trash2, UsersRound } from "lucide-react";
+import { Check, LoaderCircle, Plus, SquarePen, Trash2, UsersRound, X } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, EmptyState, PanelTitle } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field } from "@/components/ui/form";
@@ -33,6 +33,7 @@ export function GroupsPage() {
   const [form, setForm] = useState<GroupFormValues>(defaultForm);
   const [errors, setErrors] = useState<Partial<Record<keyof GroupFormValues, string>>>({});
   const [submitting, setSubmitting] = useState(false);
+  const submitLabel = submitting ? "提交中..." : editing ? "保存修改" : "创建分组";
 
   async function load() {
     setLoading(true);
@@ -162,10 +163,9 @@ export function GroupsPage() {
         <Card className="overflow-hidden">
           <CardHeader className="space-y-4">
             <PanelTitle eyebrow="Groups" title="动态组" description="通过正则规则实时计算成员，不做静态落表" />
-            <Button onClick={openCreate}>
+            <IconButton label="新建分组" onClick={openCreate}>
               <Plus className="h-4 w-4" />
-              新建分组
-            </Button>
+            </IconButton>
           </CardHeader>
           <CardContent className="space-y-3">
             {loading ? (
@@ -174,7 +174,15 @@ export function GroupsPage() {
                 加载分组中...
               </div>
             ) : items.length === 0 ? (
-              <EmptyState title="没有分组" description="先创建一个正则组，再从组中创建隧道" action={<Button onClick={openCreate}>新建分组</Button>} />
+              <EmptyState
+                action={
+                  <IconButton label="新建分组" onClick={openCreate}>
+                    <Plus className="h-4 w-4" />
+                  </IconButton>
+                }
+                description="先创建一个正则组，再从组中创建隧道"
+                title="没有分组"
+              />
             ) : (
               items.map((item) => (
                 <button
@@ -219,13 +227,12 @@ export function GroupsPage() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button onClick={() => openEdit(selected)} variant="secondary">
-                  编辑
-                </Button>
-                <Button onClick={() => void remove(selected)} variant="danger">
+                <IconButton label="编辑" onClick={() => openEdit(selected)} variant="secondary">
+                  <SquarePen className="h-4 w-4" />
+                </IconButton>
+                <IconButton label="删除" onClick={() => void remove(selected)} variant="danger">
                   <Trash2 className="h-4 w-4" />
-                  删除
-                </Button>
+                </IconButton>
               </div>
             </CardHeader>
             <CardContent className="grid gap-4">
@@ -289,12 +296,12 @@ export function GroupsPage() {
             </Field>
           </div>
           <DialogFooter>
-            <Button onClick={() => setShowForm(false)} variant="ghost">
-              取消
-            </Button>
-            <Button disabled={submitting} onClick={() => void submit()}>
-              {submitting ? "提交中..." : editing ? "保存修改" : "创建分组"}
-            </Button>
+            <IconButton label="取消" onClick={() => setShowForm(false)} variant="ghost">
+              <X className="h-4 w-4" />
+            </IconButton>
+            <IconButton disabled={submitting} label={submitLabel} onClick={() => void submit()}>
+              {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : editing ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            </IconButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

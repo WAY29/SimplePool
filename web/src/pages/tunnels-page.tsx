@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { Cable, LoaderCircle, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
+import { Check, LoaderCircle, Play, Plus, RefreshCw, Square, SquarePen, Trash2, X } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { AppShell, EmptyState, PanelTitle } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, InlineFields } from "@/components/ui/form";
@@ -41,6 +41,7 @@ export function TunnelsPage() {
   const [form, setForm] = useState<TunnelFormValues>(defaultForm);
   const [errors, setErrors] = useState<Partial<Record<keyof TunnelFormValues, string>>>({});
   const [submitting, setSubmitting] = useState(false);
+  const submitLabel = submitting ? "提交中..." : editing ? "保存修改" : "创建隧道";
 
   async function load() {
     setLoading(true);
@@ -222,10 +223,9 @@ export function TunnelsPage() {
         <Card className="overflow-hidden">
           <CardHeader className="space-y-4">
             <PanelTitle eyebrow="Tunnels" title="隧道列表" description="创建隧道时按组快照挑选节点，刷新支持 selector 热切换或重建" />
-            <Button onClick={openCreate}>
+            <IconButton label="创建隧道" onClick={openCreate}>
               <Plus className="h-4 w-4" />
-              创建隧道
-            </Button>
+            </IconButton>
           </CardHeader>
           <CardContent className="space-y-3">
             {loading ? (
@@ -234,7 +234,15 @@ export function TunnelsPage() {
                 加载隧道中...
               </div>
             ) : items.length === 0 ? (
-              <EmptyState title="没有隧道" description="从分组中创建 HTTP 代理隧道后，这里会展示运行时状态" action={<Button onClick={openCreate}>创建隧道</Button>} />
+              <EmptyState
+                action={
+                  <IconButton label="创建隧道" onClick={openCreate}>
+                    <Plus className="h-4 w-4" />
+                  </IconButton>
+                }
+                description="从分组中创建 HTTP 代理隧道后，这里会展示运行时状态"
+                title="没有隧道"
+              />
             ) : (
               items.map((item) => (
                 <button
@@ -283,29 +291,24 @@ export function TunnelsPage() {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button onClick={() => void action("refresh", selected)} variant="secondary">
+                  <IconButton label="刷新" onClick={() => void action("refresh", selected)} variant="secondary">
                     <RefreshCw className="h-4 w-4" />
-                    刷新
-                  </Button>
+                  </IconButton>
                   {selected.status === "stopped" ? (
-                    <Button onClick={() => void action("start", selected)} variant="secondary">
+                    <IconButton label="启动" onClick={() => void action("start", selected)} variant="secondary">
                       <Play className="h-4 w-4" />
-                      启动
-                    </Button>
+                    </IconButton>
                   ) : (
-                    <Button onClick={() => void action("stop", selected)} variant="secondary">
+                    <IconButton label="停止" onClick={() => void action("stop", selected)} variant="secondary">
                       <Square className="h-4 w-4" />
-                      停止
-                    </Button>
+                    </IconButton>
                   )}
-                  <Button onClick={() => openEdit(selected)} variant="secondary">
-                    <Cable className="h-4 w-4" />
-                    编辑
-                  </Button>
-                  <Button onClick={() => void remove(selected)} variant="danger">
+                  <IconButton label="编辑" onClick={() => openEdit(selected)} variant="secondary">
+                    <SquarePen className="h-4 w-4" />
+                  </IconButton>
+                  <IconButton label="删除" onClick={() => void remove(selected)} variant="danger">
                     <Trash2 className="h-4 w-4" />
-                    删除
-                  </Button>
+                  </IconButton>
                 </div>
               </div>
 
@@ -416,12 +419,12 @@ export function TunnelsPage() {
             ) : null}
           </div>
           <DialogFooter>
-            <Button onClick={() => setShowForm(false)} variant="ghost">
-              取消
-            </Button>
-            <Button disabled={submitting} onClick={() => void submit()}>
-              {submitting ? "提交中..." : editing ? "保存修改" : "创建隧道"}
-            </Button>
+            <IconButton label="取消" onClick={() => setShowForm(false)} variant="ghost">
+              <X className="h-4 w-4" />
+            </IconButton>
+            <IconButton disabled={submitting} label={submitLabel} onClick={() => void submit()}>
+              {submitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : editing ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            </IconButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

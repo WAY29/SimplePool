@@ -349,7 +349,7 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "查看详情" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "新建节点" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入节点" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "批量探测" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "探测" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "网格视图" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "列表视图" })).toBeInTheDocument();
   });
@@ -377,7 +377,15 @@ describe("App", () => {
     expect(screen.queryByText("字段")).not.toBeInTheDocument();
     expect(screen.queryByText("最近状态正常")).not.toBeInTheDocument();
     expect(screen.queryByText("最近一次刷新结果")).not.toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "立即刷新" })).toBeInTheDocument();
+    expect(screen.queryByText("立即刷新")).not.toBeInTheDocument();
+    expect(screen.queryByText("编辑")).not.toBeInTheDocument();
+    expect(screen.queryByText("删除")).not.toBeInTheDocument();
+    const refreshButton = await screen.findByRole("button", { name: "立即刷新" });
+    const editButton = screen.getByRole("button", { name: "编辑" });
+    const deleteButton = screen.getByRole("button", { name: "删除" });
+    expect(refreshButton).toHaveAttribute("title", "立即刷新");
+    expect(editButton).toHaveAttribute("title", "编辑");
+    expect(deleteButton).toHaveAttribute("title", "删除");
     expect(screen.getByText("创建时间")).toBeInTheDocument();
     expect(screen.getByText("更新时间")).toBeInTheDocument();
   });
@@ -473,7 +481,7 @@ describe("App", () => {
     expect(screen.getByText("日本-B2")).toBeInTheDocument();
     expect(screen.getByText("美国-C3")).toBeInTheDocument();
     expect(screen.queryByText("停用-D4")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "批量探测订阅节点" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "探测" })).toBeInTheDocument();
     expect(screen.getByText("Available Nodes:").parentElement).toHaveTextContent("2");
   });
 
@@ -561,7 +569,7 @@ describe("App", () => {
     const user = userEvent.setup();
     expect(await screen.findByText("订阅节点")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "批量探测订阅节点" }));
+    await user.click(screen.getByRole("button", { name: "探测" }));
 
     expect(screen.getAllByText("探测中")).toHaveLength(2);
 

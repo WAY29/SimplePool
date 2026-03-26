@@ -1,7 +1,7 @@
 import { GitBranch, LogOut, Radio, ServerCog } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { useSession } from "@/hooks/use-session";
@@ -84,15 +84,14 @@ export function AppShell({ children }: AppShellProps) {
                     {session.status === "authenticated" ? session.user.username : "未登录"}
                   </span>
                 </div>
-                <Button
-                  className="border-white/10 bg-transparent px-3"
+                <IconButton
+                  className="h-9 w-9 border-white/10 bg-transparent"
+                  label="退出"
                   onClick={() => void session.logout()}
-                  size="sm"
                   variant="secondary"
                 >
                   <LogOut className="h-4 w-4" />
-                  退出
-                </Button>
+                </IconButton>
               </div>
             </div>
 

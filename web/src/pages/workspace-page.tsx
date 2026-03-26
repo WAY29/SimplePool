@@ -1,18 +1,20 @@
 import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Boxes,
+  Check,
   LoaderCircle,
   Play,
   Plus,
+  RefreshCw,
   Square,
   SquarePen,
   Trash2,
-  RefreshCw,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/button";
 import { NodeCollectionView, NodeViewModeSwitch } from "@/components/nodes/node-collection-view";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -83,6 +85,8 @@ export function WorkspacePage() {
   const [tunnelForm, setTunnelForm] = useState<TunnelFormValues>(defaultTunnelForm);
   const [tunnelErrors, setTunnelErrors] = useState<Partial<Record<keyof TunnelFormValues, string>>>({});
   const [tunnelSubmitting, setTunnelSubmitting] = useState(false);
+  const groupSubmitLabel = groupSubmitting ? "提交中..." : editingGroup ? "保存修改" : "创建分组";
+  const tunnelSubmitLabel = tunnelSubmitting ? "提交中..." : editingTunnel ? "保存修改" : "创建隧道";
   const [memberViewMode, setMemberViewMode] = usePersistedViewMode("simplepool.workspace.members.view_mode", "grid");
 
   const selectedGroup = groups.find((item) => item.id === selectedGroupID) ?? null;
@@ -370,10 +374,9 @@ export function WorkspacePage() {
                   placeholder="搜索分组名称"
                   value={groupSearch}
                 />
-                <Button onClick={openCreateGroup}>
+                <IconButton label="新建分组" onClick={openCreateGroup}>
                   <Plus className="h-4 w-4" />
-                  新建分组
-                </Button>
+                </IconButton>
               </div>
 
               {loading ? (
@@ -424,9 +427,9 @@ export function WorkspacePage() {
                   placeholder="搜索隧道名称"
                   value={tunnelSearch}
                 />
-                <Button disabled={!selectedGroup} onClick={openCreateTunnel}>
-                  创建隧道
-                </Button>
+                <IconButton disabled={!selectedGroup} label="创建隧道" onClick={openCreateTunnel}>
+                  <Plus className="h-4 w-4" />
+                </IconButton>
               </div>
 
               {!selectedGroup ? (
@@ -467,28 +470,23 @@ export function WorkspacePage() {
 
               {selectedTunnel ? (
                 <div className="grid grid-cols-4 gap-2">
-                  <SmallActionButton onClick={() => void runTunnelAction("refresh", selectedTunnel)}>
+                  <SmallActionButton label="刷新" onClick={() => void runTunnelAction("refresh", selectedTunnel)}>
                     <RefreshCw className="h-3.5 w-3.5" />
-                    刷新
                   </SmallActionButton>
                   {selectedTunnel.status === "stopped" ? (
-                    <SmallActionButton onClick={() => void runTunnelAction("start", selectedTunnel)}>
+                    <SmallActionButton label="启动" onClick={() => void runTunnelAction("start", selectedTunnel)}>
                       <Play className="h-3.5 w-3.5" />
-                      启动
                     </SmallActionButton>
                   ) : (
-                    <SmallActionButton onClick={() => void runTunnelAction("stop", selectedTunnel)}>
+                    <SmallActionButton label="停止" onClick={() => void runTunnelAction("stop", selectedTunnel)}>
                       <Square className="h-3.5 w-3.5" />
-                      停止
                     </SmallActionButton>
                   )}
-                  <SmallActionButton onClick={() => openEditTunnel(selectedTunnel)}>
+                  <SmallActionButton label="编辑" onClick={() => openEditTunnel(selectedTunnel)}>
                     <SquarePen className="h-3.5 w-3.5" />
-                    编辑
                   </SmallActionButton>
-                  <SmallActionButton danger onClick={() => void removeTunnel(selectedTunnel)}>
+                  <SmallActionButton danger label="删除" onClick={() => void removeTunnel(selectedTunnel)}>
                     <Trash2 className="h-3.5 w-3.5" />
-                    删除
                   </SmallActionButton>
                 </div>
               ) : null}
@@ -511,14 +509,12 @@ export function WorkspacePage() {
                 </div>
                 {selectedGroup ? (
                   <div className="flex flex-wrap gap-2">
-                    <Button onClick={() => openEditGroup(selectedGroup)} variant="secondary">
+                    <IconButton label="编辑分组" onClick={() => openEditGroup(selectedGroup)} variant="secondary">
                       <SquarePen className="h-4 w-4" />
-                      编辑分组
-                    </Button>
-                    <Button onClick={() => void removeGroup(selectedGroup)} variant="danger">
+                    </IconButton>
+                    <IconButton label="删除分组" onClick={() => void removeGroup(selectedGroup)} variant="danger">
                       <Trash2 className="h-4 w-4" />
-                      删除分组
-                    </Button>
+                    </IconButton>
                   </div>
                 ) : null}
               </div>
@@ -567,12 +563,12 @@ export function WorkspacePage() {
             </Field>
           </div>
           <DialogFooter>
-            <Button onClick={() => setShowGroupForm(false)} variant="ghost">
-              取消
-            </Button>
-            <Button disabled={groupSubmitting} onClick={() => void submitGroup()}>
-              {groupSubmitting ? "提交中..." : editingGroup ? "保存修改" : "创建分组"}
-            </Button>
+            <IconButton label="取消" onClick={() => setShowGroupForm(false)} variant="ghost">
+              <X className="h-4 w-4" />
+            </IconButton>
+            <IconButton disabled={groupSubmitting} label={groupSubmitLabel} onClick={() => void submitGroup()}>
+              {groupSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : editingGroup ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            </IconButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -617,12 +613,12 @@ export function WorkspacePage() {
             ) : null}
           </div>
           <DialogFooter>
-            <Button onClick={() => setShowTunnelForm(false)} variant="ghost">
-              取消
-            </Button>
-            <Button disabled={tunnelSubmitting} onClick={() => void submitTunnel()}>
-              {tunnelSubmitting ? "提交中..." : editingTunnel ? "保存修改" : "创建隧道"}
-            </Button>
+            <IconButton label="取消" onClick={() => setShowTunnelForm(false)} variant="ghost">
+              <X className="h-4 w-4" />
+            </IconButton>
+            <IconButton disabled={tunnelSubmitting} label={tunnelSubmitLabel} onClick={() => void submitTunnel()}>
+              {tunnelSubmitting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : editingTunnel ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            </IconButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -683,21 +679,25 @@ function SectionEmpty({ message }: { message: string }) {
 function SmallActionButton({
   children,
   danger,
+  label,
   onClick,
 }: {
   children: ReactNode;
   danger?: boolean;
+  label: string;
   onClick: () => void;
 }) {
   return (
     <button
+      aria-label={label}
       className={cn(
-        "inline-flex h-10 items-center justify-center gap-1.5 rounded-2xl border px-3 text-sm transition-colors",
+        "inline-flex h-10 w-10 items-center justify-center rounded-2xl border p-0 text-sm transition-colors",
         danger
           ? "border-rose-400/25 bg-rose-500/12 text-rose-100 hover:bg-rose-500/18"
           : "border-white/10 bg-white/5 text-white hover:bg-white/10",
       )}
       onClick={onClick}
+      title={label}
       type="button"
     >
       {children}

@@ -282,6 +282,7 @@ function ProbeActionButton({
         onProbe(item);
       }}
       size="sm"
+      title={`测试 ${item.name} 延迟`}
       type="button"
       variant="ghost"
     >
@@ -303,17 +304,18 @@ function ModeButton({
 }) {
   return (
     <button
+      aria-label={label}
       className={cn(
-        "inline-flex items-center gap-2 border px-3 py-2 text-sm transition-colors",
+        "inline-flex h-9 w-9 items-center justify-center border text-sm transition-colors",
         active
           ? "border-white/10 bg-white/10 text-white"
           : "border-transparent text-[var(--muted-foreground)] hover:text-white",
       )}
       onClick={onClick}
+      title={label}
       type="button"
     >
       {children}
-      {label}
     </button>
   );
 }

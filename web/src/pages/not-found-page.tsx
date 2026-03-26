@@ -1,7 +1,7 @@
-import { Link2Off } from "lucide-react";
+import { GitBranch, Link2Off, Radio } from "lucide-react";
 import { Link } from "react-router-dom";
 import { AppShell } from "@/components/layout/app-shell";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
 export function NotFoundPage() {
@@ -19,12 +19,16 @@ export function NotFoundPage() {
             </p>
           </div>
           <div className="flex flex-wrap justify-center gap-3 pt-2">
-            <Button asChild>
-              <Link to="/node-groups">进入节点组</Link>
-            </Button>
-            <Button asChild variant="secondary">
-              <Link to="/nodes">查看节点</Link>
-            </Button>
+            <IconButton asChild label="进入节点组">
+              <Link to="/node-groups">
+                <GitBranch className="h-4 w-4" />
+              </Link>
+            </IconButton>
+            <IconButton asChild label="查看节点" variant="secondary">
+              <Link to="/nodes">
+                <Radio className="h-4 w-4" />
+              </Link>
+            </IconButton>
           </div>
         </CardContent>
       </Card>
