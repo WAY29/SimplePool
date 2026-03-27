@@ -118,6 +118,15 @@ func (p *Prober) buildConfig(target node.ProbeTarget, inboundPort int) ([]byte, 
 		"log": map[string]any{
 			"level": p.logLevel,
 		},
+		"dns": map[string]any{
+			"servers": []any{
+				map[string]any{
+					"type": "local",
+					"tag":  localDNSTag,
+				},
+			},
+			"final": localDNSTag,
+		},
 		"inbounds": []map[string]any{
 			{
 				"type":        "http",
@@ -130,7 +139,8 @@ func (p *Prober) buildConfig(target node.ProbeTarget, inboundPort int) ([]byte, 
 			outbound,
 		},
 		"route": map[string]any{
-			"final": "probe-out",
+			"final":                   "probe-out",
+			"default_domain_resolver": localDNSTag,
 		},
 	}
 	return json.Marshal(config)

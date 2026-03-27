@@ -26,6 +26,7 @@ var (
 	ErrInvalidPayload   = errors.New("tunnel: invalid payload")
 	ErrNoAvailableNodes = errors.New("tunnel: no available nodes")
 	ErrTunnelNotRunning = errors.New("tunnel: tunnel not running")
+	ErrRuntimeConfigNil = errors.New("tunnel: runtime config missing")
 )
 
 const selectorTag = "tunnel-selector"
@@ -315,6 +316,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*View, error) 
 
 	entity.Status = domain.TunnelStatusRunning
 	entity.CurrentNodeID = stringPtr(prepared.currentNode.ID)
+	entity.RuntimeConfigJSON = string(prepared.config)
 	entity.LastRefreshError = ""
 	entity.UpdatedAt = s.now().UTC()
 	if err := s.tunnels.Update(ctx, entity); err != nil {
@@ -409,6 +411,7 @@ func (s *Service) Start(ctx context.Context, id string) (*View, error) {
 
 	current.Status = domain.TunnelStatusRunning
 	current.CurrentNodeID = stringPtr(prepared.currentNode.ID)
+	current.RuntimeConfigJSON = string(prepared.config)
 	current.LastRefreshError = ""
 	current.UpdatedAt = s.now().UTC()
 	if err := s.tunnels.Update(ctx, current); err != nil {
@@ -580,7 +583,7 @@ type rebuildInput struct {
 
 func (s *Service) rebuildTunnel(ctx context.Context, current *domain.Tunnel, input rebuildInput) (*View, error) {
 	layout := singbox.NewRuntimeLayout(s.runtimeRoot, current.ID)
-	oldConfig, err := os.ReadFile(layout.ConfigPath)
+	oldConfig, err := loadStoredRuntimeConfig(current)
 	if err != nil {
 		return nil, err
 	}
@@ -635,6 +638,7 @@ func (s *Service) rebuildTunnel(ctx context.Context, current *domain.Tunnel, inp
 	now := s.now().UTC()
 	current.Status = domain.TunnelStatusRunning
 	current.CurrentNodeID = stringPtr(prepared.currentNode.ID)
+	current.RuntimeConfigJSON = string(prepared.config)
 	current.LastRefreshError = ""
 	if input.UpdateRefreshAt {
 		current.LastRefreshAt = &now
@@ -691,7 +695,7 @@ func (s *Service) prepareRuntime(ctx context.Context, tunnelID, groupID string, 
 		return nil, ErrNoAvailableNodes
 	}
 	if cachedNode != nil {
-		return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, selectorTags, cachedNode, nil, nil)
+		return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, cachedNode, nil, nil)
 	}
 	return s.prepareRuntimeWithConcurrentProbes(ctx, tunnelID, layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, candidates, runtimeNodes, selectorTags)
 }
@@ -719,7 +723,7 @@ func (s *Service) prepareRuntimeWithConcurrentProbes(ctx context.Context, tunnel
 	for {
 		select {
 		case outcome := <-successCh:
-			return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, selectorTags, outcome.item, cancel, doneCh)
+			return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, outcome.item, cancel, doneCh)
 		case err := <-errCh:
 			cancel()
 			waitForProbeDrain(doneCh)
@@ -735,7 +739,8 @@ func (s *Service) prepareRuntimeWithConcurrentProbes(ctx context.Context, tunnel
 	}
 }
 
-func (s *Service) renderPreparedRuntime(layout singbox.RuntimeLayout, listenHost string, listenPort, controllerPort int, controllerSecret string, proxyAuth *singbox.ProxyAuth, runtimeNodes []singbox.RuntimeNode, selectorTags []string, currentNode *domain.Node, cancelBackground context.CancelFunc, backgroundDone <-chan struct{}) (*preparedRuntime, error) {
+func (s *Service) renderPreparedRuntime(layout singbox.RuntimeLayout, listenHost string, listenPort, controllerPort int, controllerSecret string, proxyAuth *singbox.ProxyAuth, runtimeNodes []singbox.RuntimeNode, currentNode *domain.Node, cancelBackground context.CancelFunc, backgroundDone <-chan struct{}) (*preparedRuntime, error) {
+	selectedRuntimeNodes, selectedSelectorTags := runtimeNodesForCurrentProtocol(runtimeNodes, currentNode.Protocol)
 	config, err := s.renderer.Render(singbox.RenderInput{
 		ListenHost:       listenHost,
 		ListenPort:       listenPort,
@@ -744,7 +749,7 @@ func (s *Service) renderPreparedRuntime(layout singbox.RuntimeLayout, listenHost
 		ControllerPort:   controllerPort,
 		ControllerSecret: controllerSecret,
 		CacheFilePath:    layout.CachePath,
-		Nodes:            runtimeNodes,
+		Nodes:            selectedRuntimeNodes,
 		CurrentNodeID:    currentNode.ID,
 	})
 	if err != nil {
@@ -758,10 +763,29 @@ func (s *Service) renderPreparedRuntime(layout singbox.RuntimeLayout, listenHost
 	return &preparedRuntime{
 		config:           config,
 		currentNode:      currentNode,
-		selectorTags:     selectorTags,
+		selectorTags:     selectedSelectorTags,
 		cancelBackground: cancelBackground,
 		backgroundDone:   backgroundDone,
 	}, nil
+}
+
+func runtimeNodesForCurrentProtocol(nodes []singbox.RuntimeNode, protocol string) ([]singbox.RuntimeNode, []string) {
+	filteredNodes := make([]singbox.RuntimeNode, 0, len(nodes))
+	filteredTags := make([]string, 0, len(nodes))
+	for _, item := range nodes {
+		if !strings.EqualFold(item.Protocol, protocol) {
+			continue
+		}
+		filteredNodes = append(filteredNodes, item)
+		filteredTags = append(filteredTags, outboundTag(item.ID))
+	}
+	if len(filteredNodes) == 0 {
+		filteredNodes = append(filteredNodes, nodes...)
+		for _, item := range nodes {
+			filteredTags = append(filteredTags, outboundTag(item.ID))
+		}
+	}
+	return filteredNodes, filteredTags
 }
 
 func (s *Service) probeCandidate(ctx context.Context, tunnelID string, candidate runtimeCandidate, successCh chan<- probeOutcome, errCh chan<- error) {
@@ -842,6 +866,13 @@ func (s *Service) loadGroupSnapshot(ctx context.Context, groupID string) ([]*dom
 		return nil, ErrNoAvailableNodes
 	}
 	return result, nil
+}
+
+func loadStoredRuntimeConfig(item *domain.Tunnel) ([]byte, error) {
+	if item == nil || item.RuntimeConfigJSON == "" {
+		return nil, ErrRuntimeConfigNil
+	}
+	return []byte(item.RuntimeConfigJSON), nil
 }
 
 func (s *Service) buildRuntimeNode(item *domain.Node) (node.ProbeTarget, singbox.RuntimeNode, error) {

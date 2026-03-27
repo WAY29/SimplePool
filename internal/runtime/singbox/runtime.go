@@ -30,6 +30,7 @@ const (
 	selectorTag    = "tunnel-selector"
 	httpInboundTag = "http-in"
 	directTag      = "system-direct"
+	localDNSTag    = "local"
 )
 
 var (
@@ -67,6 +68,7 @@ type RenderInput struct {
 	CacheFilePath    string
 	Nodes            []RuntimeNode
 	CurrentNodeID    string
+	DisableSelector  bool
 }
 
 type RuntimeLayout struct {
@@ -205,18 +207,23 @@ func (r *ConfigRenderer) Render(input RenderInput) ([]byte, error) {
 		currentTag = selectorOutbounds[0]
 	}
 
-	outbounds = append(outbounds,
-		map[string]any{
+	if !input.DisableSelector {
+		outbounds = append(outbounds, map[string]any{
 			"type":      "selector",
 			"tag":       selectorTag,
 			"outbounds": selectorOutbounds,
 			"default":   currentTag,
-		},
-		map[string]any{
-			"type": "direct",
-			"tag":  directTag,
-		},
-	)
+		})
+	}
+	outbounds = append(outbounds, map[string]any{
+		"type": "direct",
+		"tag":  directTag,
+	})
+
+	finalOutbound := currentTag
+	if !input.DisableSelector {
+		finalOutbound = selectorTag
+	}
 
 	experimental := map[string]any{
 		"clash_api": map[string]any{
@@ -235,10 +242,20 @@ func (r *ConfigRenderer) Render(input RenderInput) ([]byte, error) {
 		"log": map[string]any{
 			"level": logging.NormalizeLevel(input.LogLevel),
 		},
+		"dns": map[string]any{
+			"servers": []any{
+				map[string]any{
+					"type": "local",
+					"tag":  localDNSTag,
+				},
+			},
+			"final": localDNSTag,
+		},
 		"inbounds":  []any{buildHTTPInbound(listenHost, input.ListenPort, input.Auth)},
 		"outbounds": outbounds,
 		"route": map[string]any{
-			"final": selectorTag,
+			"final":                   finalOutbound,
+			"default_domain_resolver": localDNSTag,
 		},
 		"experimental": experimental,
 	}
@@ -265,6 +282,14 @@ func outboundTag(nodeID string) string {
 	return "node-" + nodeID
 }
 
+func serverNeedsResolver(server string) bool {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return false
+	}
+	return net.ParseIP(server) == nil
+}
+
 func buildRuntimeOutbound(tag string, node RuntimeNode) (map[string]any, error) {
 	credential := make(map[string]any)
 	if err := json.Unmarshal(node.Credential, &credential); err != nil {
@@ -279,6 +304,9 @@ func buildRuntimeOutbound(tag string, node RuntimeNode) (map[string]any, error) 
 		"tag":         tag,
 		"server":      node.Server,
 		"server_port": node.ServerPort,
+	}
+	if serverNeedsResolver(node.Server) {
+		outbound["domain_resolver"] = localDNSTag
 	}
 
 	switch normalizeProtocol(node.Protocol) {
@@ -477,10 +505,6 @@ func (s *Supervisor) Start(ctx context.Context, request StartRequest) error {
 		s.fail(err)
 		return err
 	}
-	if err := WriteAtomic(request.Layout.ConfigPath, formatted); err != nil {
-		s.fail(err)
-		return err
-	}
 
 	writer, err := newFileLogWriter(request.Layout, s.now)
 	if err != nil {
@@ -488,7 +512,11 @@ func (s *Supervisor) Start(ctx context.Context, request StartRequest) error {
 		return err
 	}
 
-	runtimeCtx, cancel := context.WithCancel(ctx)
+	runtimeParent := context.Background()
+	if ctx != nil {
+		runtimeParent = context.WithoutCancel(ctx)
+	}
+	runtimeCtx, cancel := context.WithCancel(runtimeParent)
 	instance, err := s.factory.New(runtimeCtx, formatted, writer)
 	if err != nil {
 		cancel()

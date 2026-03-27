@@ -99,6 +99,7 @@ type Tunnel struct {
 	ControllerSecretCiphertext []byte
 	ControllerSecretNonce      []byte
 	RuntimeDir                 string
+	RuntimeConfigJSON          string
 	LastRefreshAt              *time.Time
 	LastRefreshError           string
 	CreatedAt                  time.Time

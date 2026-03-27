@@ -44,6 +44,13 @@ func TestTunnelServiceCreateStopStartAndDelete(t *testing.T) {
 	if !created.HasAuth {
 		t.Fatal("HasAuth = false, want true")
 	}
+	storedAfterCreate, err := deps.repos.Tunnels.GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Tunnels.GetByID() after create error = %v", err)
+	}
+	if storedAfterCreate.RuntimeConfigJSON == "" {
+		t.Fatal("RuntimeConfigJSON empty after create")
+	}
 
 	runtimeState := deps.runtime.state(created.ID)
 	if runtimeState == nil || !runtimeState.running {
@@ -53,7 +60,7 @@ func TestTunnelServiceCreateStopStartAndDelete(t *testing.T) {
 		t.Fatalf("runtime selector now = %q, want node-node-hk-fast", runtimeState.now)
 	}
 	if !slices.Equal(runtimeState.all, []string{"node-node-hk-fast", "node-node-jp-slow"}) {
-		t.Fatalf("runtime selector all = %v, want enabled group snapshot", runtimeState.all)
+		t.Fatalf("runtime all = %v, want enabled group snapshot", runtimeState.all)
 	}
 
 	waitForTunnelSamples(t, ctx, deps.repos, created.ID, 2)
@@ -173,6 +180,72 @@ func TestTunnelServiceRefreshFailureKeepsOldRuntimeAndMarksDegraded(t *testing.T
 	}
 }
 
+func TestTunnelServiceRebuildFailureFallsBackToStoredRuntimeConfig(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	asiaGroupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+	usGroupID := seedTunnelGroup(t, ctx, deps.groupService, "美国", "^US-")
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: asiaGroupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	storedBefore, err := deps.repos.Tunnels.GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Tunnels.GetByID() error = %v", err)
+	}
+	if storedBefore.RuntimeConfigJSON == "" {
+		t.Fatal("RuntimeConfigJSON empty before rebuild")
+	}
+
+	layout := singbox.NewRuntimeLayout(deps.runtimeRoot, created.ID)
+	if err := os.Remove(layout.ConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove(config) error = %v", err)
+	}
+
+	deps.runtime.startErrors = []error{errors.New("boom"), nil}
+
+	_, err = service.Update(ctx, created.ID, tunnel.UpdateInput{
+		Name:    "proxy-b",
+		GroupID: usGroupID,
+	})
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("Update() error = %v, want boom", err)
+	}
+
+	got, err := service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != domain.TunnelStatusDegraded {
+		t.Fatalf("Status = %q, want degraded", got.Status)
+	}
+	if got.CurrentNodeID == nil || *got.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("CurrentNodeID = %v, want old node-hk-fast", got.CurrentNodeID)
+	}
+
+	state := deps.runtime.state(created.ID)
+	if state == nil || !state.running {
+		t.Fatalf("runtime state = %+v, want running fallback runtime", state)
+	}
+	if !slices.Equal(state.all, []string{"node-node-hk-fast", "node-node-jp-slow"}) {
+		t.Fatalf("runtime all = %v, want old asia snapshot after fallback", state.all)
+	}
+
+	storedAfter, err := deps.repos.Tunnels.GetByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Tunnels.GetByID() after rebuild error = %v", err)
+	}
+	if storedAfter.RuntimeConfigJSON != storedBefore.RuntimeConfigJSON {
+		t.Fatalf("RuntimeConfigJSON changed after failed rebuild")
+	}
+}
+
 func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *testing.T) {
 	ctx := context.Background()
 	service, deps := newTunnelService(t)
@@ -260,6 +333,74 @@ func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *
 	}
 	if state := deps.runtime.state(created.ID); state == nil || state.now != "node-node-hk-slow" {
 		t.Fatalf("runtime selector now = %+v, want switched to node-node-hk-slow", state)
+	}
+	if state := deps.runtime.state(created.ID); state == nil || !slices.Equal(state.all, []string{"node-node-hk-fast", "node-node-jp-slow", "node-node-hk-slow"}) {
+		t.Fatalf("runtime all = %+v, want all asia trojan nodes", state)
+	}
+}
+
+func TestTunnelServiceCreateFiltersRuntimePoolToCurrentProtocol(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	hy2Node := &domain.Node{
+		ID:                "node-hk-hy2",
+		Name:              "HK-hy2",
+		DedupeFingerprint: "hk-hy2",
+		SourceKind:        domain.NodeSourceManual,
+		Protocol:          "hysteria2",
+		Server:            "5.5.5.5",
+		ServerPort:        443,
+		Enabled:           true,
+		LastStatus:        domain.NodeStatusUnknown,
+		CreatedAt:         deps.now().Add(4 * time.Minute),
+		UpdatedAt:         deps.now().Add(4 * time.Minute),
+	}
+	ciphertext, nonce, err := deps.cipher.Encrypt([]byte(`{"password":"secret"}`), []byte("node:credential:"+hy2Node.ID))
+	if err != nil {
+		t.Fatalf("Encrypt(%s) error = %v", hy2Node.ID, err)
+	}
+	hy2Node.CredentialCiphertext = ciphertext
+	hy2Node.CredentialNonce = nonce
+	hy2Node.TLSJSON = `{"enabled":true,"server_name":"www.apple.com","insecure":true}`
+	if err := deps.repos.Nodes.Create(ctx, hy2Node); err != nil {
+		t.Fatalf("Nodes.Create(%s) error = %v", hy2Node.ID, err)
+	}
+
+	deps.prober.results["node-hk-fast"] = node.ProbeResult{Success: true, LatencyMS: 10, TestURL: "https://cloudflare.com/cdn-cgi/trace"}
+	deps.prober.results["node-jp-slow"] = node.ProbeResult{Success: true, LatencyMS: 30, TestURL: "https://cloudflare.com/cdn-cgi/trace"}
+	deps.prober.results["node-hk-hy2"] = node.ProbeResult{Success: true, LatencyMS: 20, TestURL: "https://cloudflare.com/cdn-cgi/trace"}
+	latency := int64(10)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-hk-fast-cached",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &latency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() error = %v", err)
+	}
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("CurrentNodeID = %v, want node-hk-fast", created.CurrentNodeID)
+	}
+
+	state := deps.runtime.state(created.ID)
+	if state == nil || !state.running {
+		t.Fatal("runtime not running after create")
+	}
+	if !slices.Equal(state.all, []string{"node-node-hk-fast", "node-node-jp-slow"}) {
+		t.Fatalf("runtime all = %v, want only trojan nodes in selector pool", state.all)
 	}
 }
 
@@ -398,6 +539,7 @@ type tunnelServiceDeps struct {
 	prober       *fakeTunnelProber
 	cipher       *appcrypto.AESGCM
 	now          func() time.Time
+	runtimeRoot  string
 }
 
 func newTunnelService(t *testing.T) (*tunnel.Service, *tunnelServiceDeps) {
@@ -443,6 +585,7 @@ func newTunnelService(t *testing.T) (*tunnel.Service, *tunnelServiceDeps) {
 		},
 	}
 	runtimeManager := newFakeRuntimeManager()
+	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
 
 	service := tunnel.NewService(tunnel.Options{
 		Tunnels:        repos.Tunnels,
@@ -456,7 +599,7 @@ func newTunnelService(t *testing.T) (*tunnel.Service, *tunnelServiceDeps) {
 		Runtime:        runtimeManager,
 		PortAllocator:  singbox.NewPortAllocator(),
 		Renderer:       singbox.NewConfigRenderer(),
-		RuntimeRoot:    filepath.Join(t.TempDir(), "runtime"),
+		RuntimeRoot:    runtimeRoot,
 		Now:            now,
 	})
 	t.Cleanup(func() {
@@ -471,6 +614,7 @@ func newTunnelService(t *testing.T) (*tunnel.Service, *tunnelServiceDeps) {
 		prober:       prober,
 		cipher:       cipher,
 		now:          now,
+		runtimeRoot:  runtimeRoot,
 	}
 }
 
@@ -661,6 +805,7 @@ type fakeRuntimeManager struct {
 	switchCalls int
 	states      map[string]*fakeRuntimeState
 	startErr    error
+	startErrors []error
 	stopErr     error
 	switchErr   error
 }
@@ -678,6 +823,14 @@ func newFakeRuntimeManager() *fakeRuntimeManager {
 }
 
 func (f *fakeRuntimeManager) Start(ctx context.Context, tunnelID string, layout singbox.RuntimeLayout, config []byte) error {
+	if len(f.startErrors) > 0 {
+		err := f.startErrors[0]
+		f.startErrors = f.startErrors[1:]
+		if err != nil {
+			f.startCalls++
+			return err
+		}
+	}
 	if f.startErr != nil {
 		return f.startErr
 	}
@@ -696,26 +849,57 @@ func (f *fakeRuntimeManager) Start(ctx context.Context, tunnelID string, layout 
 	}
 
 	state := &fakeRuntimeState{running: true}
+	var final string
+	hasSelector := false
 	for _, outbound := range payload.Outbounds {
 		tag, _ := outbound["tag"].(string)
-		if tag != "tunnel-selector" {
-			continue
-		}
-		if raw, ok := outbound["outbounds"].([]any); ok {
-			for _, item := range raw {
-				if value, ok := item.(string); ok {
-					state.all = append(state.all, value)
+		switch outbound["type"] {
+		case "selector":
+			hasSelector = true
+			if raw, ok := outbound["outbounds"].([]any); ok {
+				for _, item := range raw {
+					if value, ok := item.(string); ok {
+						if !slices.Contains(state.all, value) {
+							state.all = append(state.all, value)
+						}
+					}
 				}
 			}
+			if now, _ := outbound["default"].(string); now != "" {
+				state.now = now
+			}
+		case "direct":
+			continue
+		default:
+			if tag != "" && !hasSelector && !slices.Contains(state.all, tag) {
+				state.all = append(state.all, tag)
+			}
 		}
-		if now, _ := outbound["default"].(string); now != "" {
-			state.now = now
-		}
+	}
+	if route, err := parseRuntimeRouteFinal(config); err == nil {
+		final = route
+	}
+	if state.now == "" {
+		state.now = final
+	}
+	if len(state.all) == 0 && final != "" {
+		state.all = append(state.all, final)
 	}
 
 	f.states[tunnelID] = state
 	f.startCalls++
 	return nil
+}
+
+func parseRuntimeRouteFinal(config []byte) (string, error) {
+	var payload struct {
+		Route map[string]any `json:"route"`
+	}
+	if err := json.Unmarshal(config, &payload); err != nil {
+		return "", err
+	}
+	value, _ := payload.Route["final"].(string)
+	return value, nil
 }
 
 func (f *fakeRuntimeManager) Stop(ctx context.Context, tunnelID string) error {

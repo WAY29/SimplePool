@@ -124,6 +124,10 @@ export function WorkspacePage() {
       },
     ]),
   );
+  const memberNameByID = useMemo(
+    () => Object.fromEntries(members.map((item) => [item.id, item.name])),
+    [members],
+  );
 
   async function loadWorkspace(preferredGroupID?: string | null) {
     setLoading(true);
@@ -438,6 +442,13 @@ export function WorkspacePage() {
     }
   }
 
+  function currentTunnelNodeLabel(item: TunnelView) {
+    if (!item.current_node_id) {
+      return "未锁定";
+    }
+    return memberNameByID[item.current_node_id] ?? item.current_node_id;
+  }
+
   return (
     <AppShell hideHeader>
       <div className="rounded-[30px] border border-white/10 bg-[linear-gradient(180deg,rgba(12,18,28,0.96),rgba(8,12,20,0.98))] shadow-[0_30px_120px_rgba(2,8,20,0.48)]">
@@ -526,57 +537,92 @@ export function WorkspacePage() {
               ) : (
                 <div className="grid gap-3">
                   {filteredTunnels.map((item) => (
-                    <button
+                    <div
+                      aria-label={`隧道 ${item.name}`}
                       className={cn(
-                        "grid gap-3 rounded-[18px] border px-4 py-4 text-left transition-colors",
+                        "overflow-hidden rounded-[18px] border transition-colors",
                         selectedTunnel?.id === item.id
                           ? "border-violet-400/40 bg-violet-500/12"
                           : "border-white/10 bg-white/4 hover:border-white/20 hover:bg-white/7",
                       )}
                       key={item.id}
-                      onClick={() => setSelectedTunnelID(item.id)}
-                      type="button"
+                      role="group"
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-medium text-white">{item.name}</p>
-                          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                            {item.listen_host}:{item.listen_port}
-                          </p>
+                      <button
+                        className="grid w-full gap-3 px-4 py-4 text-left"
+                        onClick={() => setSelectedTunnelID(item.id)}
+                        type="button"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-white">{item.name}</p>
+                            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                              {item.listen_host}:{item.listen_port}
+                            </p>
+                          </div>
+                          <Badge tone={tunnelStatusTone(item.status)}>{formatTunnelStatus(item.status)}</Badge>
                         </div>
-                        <Badge tone={tunnelStatusTone(item.status)}>{formatTunnelStatus(item.status)}</Badge>
+                        <div className="grid gap-1 text-xs text-[var(--muted-foreground)]">
+                          <span>{item.has_auth ? "已启用认证" : "未启用认证"}</span>
+                          <span>当前节点 {currentTunnelNodeLabel(item)}</span>
+                          <span>最近刷新 {formatDateTime(item.last_refresh_at)}</span>
+                        </div>
+                      </button>
+                      <div className="flex items-center justify-end gap-2 border-t border-white/8 px-4 py-3">
+                        <SmallActionButton
+                          label={`刷新 ${item.name}`}
+                          onClick={() => {
+                            setSelectedTunnelID(item.id);
+                            void runTunnelAction("refresh", item);
+                          }}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        </SmallActionButton>
+                        {item.status === "stopped" ? (
+                          <SmallActionButton
+                            label={`启动 ${item.name}`}
+                            onClick={() => {
+                              setSelectedTunnelID(item.id);
+                              void runTunnelAction("start", item);
+                            }}
+                          >
+                            <Play className="h-3.5 w-3.5" />
+                          </SmallActionButton>
+                        ) : (
+                          <SmallActionButton
+                            label={`停止 ${item.name}`}
+                            onClick={() => {
+                              setSelectedTunnelID(item.id);
+                              void runTunnelAction("stop", item);
+                            }}
+                          >
+                            <Square className="h-3.5 w-3.5" />
+                          </SmallActionButton>
+                        )}
+                        <SmallActionButton
+                          label={`编辑 ${item.name}`}
+                          onClick={() => {
+                            setSelectedTunnelID(item.id);
+                            openEditTunnel(item);
+                          }}
+                        >
+                          <SquarePen className="h-3.5 w-3.5" />
+                        </SmallActionButton>
+                        <SmallActionButton
+                          danger
+                          label={`删除 ${item.name}`}
+                          onClick={() => {
+                            setSelectedTunnelID(item.id);
+                            void removeTunnel(item);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </SmallActionButton>
                       </div>
-                      <div className="flex items-center justify-between gap-3 text-xs text-[var(--muted-foreground)]">
-                        <span>{item.has_auth ? "已启用认证" : "未启用认证"}</span>
-                        <span>最近刷新 {formatDateTime(item.last_refresh_at)}</span>
-                      </div>
-                    </button>
+                    </div>
                   ))}
                 </div>
               )}
-
-              {selectedTunnel ? (
-                <div className="grid grid-cols-4 gap-2">
-                  <SmallActionButton label="刷新" onClick={() => void runTunnelAction("refresh", selectedTunnel)}>
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  </SmallActionButton>
-                  {selectedTunnel.status === "stopped" ? (
-                    <SmallActionButton label="启动" onClick={() => void runTunnelAction("start", selectedTunnel)}>
-                      <Play className="h-3.5 w-3.5" />
-                    </SmallActionButton>
-                  ) : (
-                    <SmallActionButton label="停止" onClick={() => void runTunnelAction("stop", selectedTunnel)}>
-                      <Square className="h-3.5 w-3.5" />
-                    </SmallActionButton>
-                  )}
-                  <SmallActionButton label="编辑" onClick={() => openEditTunnel(selectedTunnel)}>
-                    <SquarePen className="h-3.5 w-3.5" />
-                  </SmallActionButton>
-                  <SmallActionButton danger label="删除" onClick={() => void removeTunnel(selectedTunnel)}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </SmallActionButton>
-                </div>
-              ) : null}
             </WorkspaceSection>
           </div>
 
@@ -677,16 +723,6 @@ export function WorkspacePage() {
           <div className="grid gap-4">
             <Field error={tunnelErrors.name} label="隧道名称">
               <Input onChange={(event) => setTunnelForm((current) => ({ ...current, name: event.target.value }))} value={tunnelForm.name} />
-            </Field>
-            <Field error={tunnelErrors.groupID} label="分组 ID">
-              <Input list="group-options" onChange={(event) => setTunnelForm((current) => ({ ...current, groupID: event.target.value }))} value={tunnelForm.groupID} />
-              <datalist id="group-options">
-                {groups.map((group) => (
-                  <option key={group.id} value={group.id}>
-                    {group.name}
-                  </option>
-                ))}
-              </datalist>
             </Field>
             <InlineFields>
               <Field label="监听地址">

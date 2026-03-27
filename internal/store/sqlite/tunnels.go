@@ -15,8 +15,8 @@ func (r *TunnelRepository) Create(ctx context.Context, tunnel *domain.Tunnel) er
 	_, err := r.db.ExecContext(
 		ctx,
 		`INSERT INTO tunnels(id, name, group_id, listen_host, listen_port, status, current_node_id, auth_username_ciphertext, auth_password_ciphertext, auth_nonce,
-		 controller_port, controller_secret_ciphertext, controller_secret_nonce, runtime_dir, last_refresh_at, last_refresh_error, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 controller_port, controller_secret_ciphertext, controller_secret_nonce, runtime_dir, runtime_config_json, last_refresh_at, last_refresh_error, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		tunnel.ID,
 		tunnel.Name,
 		tunnel.GroupID,
@@ -31,6 +31,7 @@ func (r *TunnelRepository) Create(ctx context.Context, tunnel *domain.Tunnel) er
 		tunnel.ControllerSecretCiphertext,
 		tunnel.ControllerSecretNonce,
 		tunnel.RuntimeDir,
+		tunnel.RuntimeConfigJSON,
 		nullableTimeValue(tunnel.LastRefreshAt),
 		tunnel.LastRefreshError,
 		formatTime(tunnel.CreatedAt),
@@ -44,7 +45,7 @@ func (r *TunnelRepository) Update(ctx context.Context, tunnel *domain.Tunnel) er
 		ctx,
 		`UPDATE tunnels
 		 SET name = ?, group_id = ?, listen_host = ?, listen_port = ?, status = ?, current_node_id = ?, auth_username_ciphertext = ?, auth_password_ciphertext = ?, auth_nonce = ?,
-		     controller_port = ?, controller_secret_ciphertext = ?, controller_secret_nonce = ?, runtime_dir = ?, last_refresh_at = ?, last_refresh_error = ?, updated_at = ?
+		     controller_port = ?, controller_secret_ciphertext = ?, controller_secret_nonce = ?, runtime_dir = ?, runtime_config_json = ?, last_refresh_at = ?, last_refresh_error = ?, updated_at = ?
 		 WHERE id = ?`,
 		tunnel.Name,
 		tunnel.GroupID,
@@ -59,6 +60,7 @@ func (r *TunnelRepository) Update(ctx context.Context, tunnel *domain.Tunnel) er
 		tunnel.ControllerSecretCiphertext,
 		tunnel.ControllerSecretNonce,
 		tunnel.RuntimeDir,
+		tunnel.RuntimeConfigJSON,
 		nullableTimeValue(tunnel.LastRefreshAt),
 		tunnel.LastRefreshError,
 		formatTime(tunnel.UpdatedAt),
@@ -72,7 +74,7 @@ func (r *TunnelRepository) Update(ctx context.Context, tunnel *domain.Tunnel) er
 }
 
 func (r *TunnelRepository) GetByID(ctx context.Context, id string) (*domain.Tunnel, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT id, name, group_id, listen_host, listen_port, status, current_node_id, auth_username_ciphertext, auth_password_ciphertext, auth_nonce, controller_port, controller_secret_ciphertext, controller_secret_nonce, runtime_dir, last_refresh_at, last_refresh_error, created_at, updated_at FROM tunnels WHERE id = ?`, id)
+	row := r.db.QueryRowContext(ctx, `SELECT id, name, group_id, listen_host, listen_port, status, current_node_id, auth_username_ciphertext, auth_password_ciphertext, auth_nonce, controller_port, controller_secret_ciphertext, controller_secret_nonce, runtime_dir, runtime_config_json, last_refresh_at, last_refresh_error, created_at, updated_at FROM tunnels WHERE id = ?`, id)
 	item, err := scanTunnel(row)
 	if err != nil {
 		return nil, translateNotFound(err)
@@ -81,7 +83,7 @@ func (r *TunnelRepository) GetByID(ctx context.Context, id string) (*domain.Tunn
 }
 
 func (r *TunnelRepository) List(ctx context.Context) ([]*domain.Tunnel, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, name, group_id, listen_host, listen_port, status, current_node_id, auth_username_ciphertext, auth_password_ciphertext, auth_nonce, controller_port, controller_secret_ciphertext, controller_secret_nonce, runtime_dir, last_refresh_at, last_refresh_error, created_at, updated_at FROM tunnels ORDER BY created_at ASC`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, name, group_id, listen_host, listen_port, status, current_node_id, auth_username_ciphertext, auth_password_ciphertext, auth_nonce, controller_port, controller_secret_ciphertext, controller_secret_nonce, runtime_dir, runtime_config_json, last_refresh_at, last_refresh_error, created_at, updated_at FROM tunnels ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -133,6 +135,7 @@ func scanTunnel(scanner tunnelScanner) (*domain.Tunnel, error) {
 		&item.ControllerSecretCiphertext,
 		&item.ControllerSecretNonce,
 		&item.RuntimeDir,
+		&item.RuntimeConfigJSON,
 		&lastRefreshAt,
 		&item.LastRefreshError,
 		&createdAt,

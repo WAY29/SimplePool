@@ -149,6 +149,112 @@ func TestConfigRendererDefaultsLogLevelToInfo(t *testing.T) {
 	}
 }
 
+func TestConfigRendererUsesLocalDNSResolverForDomainOutbounds(t *testing.T) {
+	renderer := singbox.NewConfigRenderer()
+	compiler := &singbox.ConfigCompiler{}
+
+	configJSON, err := renderer.Render(singbox.RenderInput{
+		ListenHost:       "127.0.0.1",
+		ListenPort:       18080,
+		ControllerPort:   19090,
+		ControllerSecret: "secret-1",
+		CurrentNodeID:    "1",
+		Nodes: []singbox.RuntimeNode{{
+			ID:             "1",
+			Name:           "Domain-VLESS",
+			Protocol:       "vless",
+			Server:         "downloadcfpro.example.com",
+			ServerPort:     443,
+			Credential:     []byte(`{"uuid":"u-1"}`),
+			TransportJSON:  `{"type":"tcp"}`,
+			TLSJSON:        `{"enabled":true,"server_name":"downloadcfpro.example.com"}`,
+			RawPayloadJSON: `{}`,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if err := compiler.Check(configJSON); err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(configJSON, &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	dnsConfig, ok := config["dns"].(map[string]any)
+	if !ok {
+		t.Fatalf("dns config missing: %+v", config)
+	}
+	servers, ok := dnsConfig["servers"].([]any)
+	if !ok || len(servers) != 1 {
+		t.Fatalf("dns.servers = %+v, want single local server", dnsConfig["servers"])
+	}
+	server := servers[0].(map[string]any)
+	if server["tag"] != "local" || server["type"] != "local" {
+		t.Fatalf("dns server = %+v, want local/local", server)
+	}
+	if _, exists := server["detour"]; exists {
+		t.Fatalf("dns server detour should be omitted, got %+v", server)
+	}
+
+	routeConfig := config["route"].(map[string]any)
+	if routeConfig["default_domain_resolver"] != "local" {
+		t.Fatalf("route.default_domain_resolver = %v, want local", routeConfig["default_domain_resolver"])
+	}
+
+	outbounds := config["outbounds"].([]any)
+	firstOutbound := outbounds[0].(map[string]any)
+	if firstOutbound["domain_resolver"] != "local" {
+		t.Fatalf("outbound.domain_resolver = %v, want local", firstOutbound["domain_resolver"])
+	}
+}
+
+func TestConfigRendererCanDisableSelectorAndRouteToCurrentOutbound(t *testing.T) {
+	renderer := singbox.NewConfigRenderer()
+
+	configJSON, err := renderer.Render(singbox.RenderInput{
+		ListenHost:       "127.0.0.1",
+		ListenPort:       18080,
+		ControllerPort:   19090,
+		ControllerSecret: "secret-1",
+		CurrentNodeID:    "1",
+		DisableSelector:  true,
+		Nodes: []singbox.RuntimeNode{{
+			ID:             "1",
+			Name:           "HK-A",
+			Protocol:       "trojan",
+			Server:         "1.1.1.1",
+			ServerPort:     443,
+			Credential:     []byte(`{"password":"secret"}`),
+			TransportJSON:  `{}`,
+			TLSJSON:        `{"enabled":true,"server_name":"hk.example.com"}`,
+			RawPayloadJSON: `{}`,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(configJSON, &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	outbounds := config["outbounds"].([]any)
+	for _, item := range outbounds {
+		entry := item.(map[string]any)
+		if entry["tag"] == "tunnel-selector" {
+			t.Fatalf("selector outbound should be omitted: %+v", entry)
+		}
+	}
+	routeConfig := config["route"].(map[string]any)
+	if routeConfig["final"] != "node-1" {
+		t.Fatalf("route.final = %v, want node-1", routeConfig["final"])
+	}
+}
+
 func TestConfigCompilerFormatAndCheck(t *testing.T) {
 	renderer := singbox.NewConfigRenderer()
 	compiler := &singbox.ConfigCompiler{}
@@ -247,12 +353,8 @@ func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 		t.Fatalf("box.startCalls = %d, want 1", box.startCalls)
 	}
 
-	configBytes, err := os.ReadFile(layout.ConfigPath)
-	if err != nil {
-		t.Fatalf("ReadFile(config) error = %v", err)
-	}
-	if !bytes.Equal(configBytes, compiler.formatted) {
-		t.Fatalf("config bytes = %q, want %q", configBytes, compiler.formatted)
+	if _, err := os.Stat(layout.ConfigPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Stat(config) error = %v, want not exist", err)
 	}
 
 	factory.writer.WriteMessage(sbLog.LevelInfo, "runtime started")
@@ -281,6 +383,51 @@ func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 	}
 	if !bytes.Contains(stderr, []byte("runtime failed")) {
 		t.Fatalf("stderr log = %q, want runtime failed", stderr)
+	}
+}
+
+func TestSupervisorStartDetachesRuntimeLifetimeFromCallerContext(t *testing.T) {
+	tempDir := t.TempDir()
+	layout := singbox.NewRuntimeLayout(tempDir, "detached")
+	compiler := &fakeCompiler{formatted: []byte("{\n  \"ok\": true\n}\n")}
+	box := &fakeBox{}
+	factory := &fakeFactory{box: box}
+	supervisor := singbox.NewSupervisor(singbox.SupervisorOptions{
+		Compiler: compiler,
+		Factory:  factory,
+	})
+
+	type contextKey string
+	const requestIDKey contextKey = "request-id"
+
+	parent, cancelParent := context.WithCancel(context.WithValue(context.Background(), requestIDKey, "req-1"))
+	t.Cleanup(cancelParent)
+
+	if err := supervisor.Start(parent, singbox.StartRequest{
+		Layout: layout,
+		Config: []byte(`{"raw":true}`),
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		if err := supervisor.Stop(); err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	}()
+
+	if factory.ctx == nil {
+		t.Fatal("factory ctx is nil")
+	}
+	if got := factory.ctx.Value(requestIDKey); got != "req-1" {
+		t.Fatalf("factory ctx value = %v, want req-1", got)
+	}
+
+	cancelParent()
+
+	select {
+	case <-factory.ctx.Done():
+		t.Fatal("runtime context should not be canceled when caller context ends")
+	default:
 	}
 }
 
@@ -375,10 +522,12 @@ func (f *fakeBox) Close() error {
 
 type fakeFactory struct {
 	box    *fakeBox
+	ctx    context.Context
 	writer sbLog.PlatformWriter
 }
 
 func (f *fakeFactory) New(ctx context.Context, config []byte, writer sbLog.PlatformWriter) (singbox.BoxInstance, error) {
+	f.ctx = ctx
 	f.writer = writer
 	return f.box, nil
 }

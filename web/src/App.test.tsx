@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -122,7 +122,7 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
       },
     ],
   });
-  const tunnels = options.tunnels ?? [
+  let tunnels = structuredClone(options.tunnels ?? [
     {
       id: "tunnel-1",
       name: "代理-A",
@@ -139,7 +139,7 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
       created_at: "2026-03-26T10:00:00Z",
       updated_at: "2026-03-26T10:00:00Z",
     },
-  ];
+  ]);
   const probeDelays = options.probeDelays ?? {};
   const probeResults = options.probeResults ?? {};
   const subscriptionRefreshResults = options.subscriptionRefreshResults ?? {};
@@ -247,8 +247,96 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
     if (groupMembersMatch) {
       return jsonResponse(200, groupMembers[groupMembersMatch[1]] ?? []);
     }
-    if (url.endsWith("/api/tunnels")) {
+    if (url.endsWith("/api/tunnels") && (init?.method === undefined || init.method === "GET")) {
       return jsonResponse(200, tunnels);
+    }
+    if (url.endsWith("/api/tunnels") && init?.method === "POST") {
+      const payload = init.body
+        ? JSON.parse(String(init.body)) as {
+            name: string;
+            group_id: string;
+            listen_host: string;
+            username: string;
+            password: string;
+          }
+        : { name: "", group_id: "", listen_host: "", username: "", password: "" };
+      const groupID = payload.group_id;
+      const currentNodeID = groupMembers[groupID]?.[0]?.id ?? null;
+      const created = {
+        id: `tunnel-${tunnels.length + 1}`,
+        name: payload.name,
+        group_id: groupID,
+        listen_host: payload.listen_host || "0.0.0.0",
+        listen_port: 18080 + tunnels.length,
+        status: "running",
+        current_node_id: currentNodeID,
+        controller_port: 19090 + tunnels.length,
+        runtime_dir: `/tmp/runtime-${tunnels.length + 1}`,
+        last_refresh_at: "2026-03-26T10:07:00Z",
+        last_refresh_error: "",
+        has_auth: Boolean(payload.username || payload.password),
+        created_at: "2026-03-26T10:07:00Z",
+        updated_at: "2026-03-26T10:07:00Z",
+      };
+      tunnels = [created, ...tunnels];
+      return jsonResponse(201, created);
+    }
+    const tunnelActionMatch = url.match(/\/api\/tunnels\/([^/]+)\/(refresh|start|stop)$/);
+    if (tunnelActionMatch && init?.method === "POST") {
+      const tunnelID = tunnelActionMatch[1];
+      const action = tunnelActionMatch[2];
+      const now =
+        action === "refresh"
+          ? "2026-03-26T10:08:00Z"
+          : "2026-03-26T10:09:00Z";
+      let updatedTunnel: Record<string, unknown> | undefined;
+      tunnels = tunnels.map((item) => {
+        if (item.id !== tunnelID) {
+          return item;
+        }
+        updatedTunnel = {
+          ...item,
+          status: action === "stop" ? "stopped" : "running",
+          last_refresh_at: action === "refresh" ? now : item.last_refresh_at,
+          updated_at: now,
+        };
+        return updatedTunnel;
+      });
+      return jsonResponse(200, updatedTunnel ?? { id: tunnelID });
+    }
+    const tunnelMatch = url.match(/\/api\/tunnels\/([^/]+)$/);
+    if (tunnelMatch && init?.method === "PUT") {
+      const tunnelID = tunnelMatch[1];
+      const payload = init.body
+        ? JSON.parse(String(init.body)) as {
+            name: string;
+            group_id: string;
+            listen_host: string;
+            username: string;
+            password: string;
+          }
+        : { name: "", group_id: "", listen_host: "", username: "", password: "" };
+      let updatedTunnel: Record<string, unknown> | undefined;
+      tunnels = tunnels.map((item) => {
+        if (item.id !== tunnelID) {
+          return item;
+        }
+        updatedTunnel = {
+          ...item,
+          name: payload.name,
+          group_id: payload.group_id,
+          listen_host: payload.listen_host || item.listen_host,
+          has_auth: Boolean(payload.username || payload.password),
+          updated_at: "2026-03-26T10:08:00Z",
+        };
+        return updatedTunnel;
+      });
+      return jsonResponse(200, updatedTunnel ?? { id: tunnelID });
+    }
+    if (tunnelMatch && init?.method === "DELETE") {
+      const tunnelID = tunnelMatch[1];
+      tunnels = tunnels.filter((item) => item.id !== tunnelID);
+      return new Response(null, { status: 204 });
     }
     if (url.endsWith("/api/subscriptions") && (init?.method === undefined || init.method === "GET")) {
       return jsonResponse(200, subscriptions);
@@ -1173,5 +1261,60 @@ describe("App", () => {
           && String(init.body).includes("\"enabled\":true"),
       ),
     ).toBe(true);
+  });
+
+  it("动态隧道创建时自动带入当前分组并在卡片内显示节点与操作按钮", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      tunnels: [],
+      groupMembers: {
+        "group-1": [
+          {
+            id: "node-1",
+            name: "香港-A1",
+            source_kind: "manual",
+            protocol: "trojan",
+            server: "192.168.1.101",
+            server_port: 443,
+            enabled: true,
+            last_latency_ms: 42,
+            last_status: "healthy",
+            last_checked_at: "2026-03-26T10:04:00Z",
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+        ],
+      },
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点组" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "创建隧道" }));
+    expect(screen.queryByLabelText("分组 ID")).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("隧道名称"), "代理-B");
+    await user.click(screen.getByRole("button", { name: "创建隧道" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) =>
+            String(input).endsWith("/api/tunnels") &&
+            init?.method === "POST" &&
+            String(init.body).includes("\"group_id\":\"group-1\""),
+        ),
+      ).toBe(true);
+    });
+
+    const tunnelCard = await screen.findByRole("group", { name: "隧道 代理-B" });
+    expect(within(tunnelCard).getByText("当前节点 香港-A1")).toBeInTheDocument();
+    expect(within(tunnelCard).getByRole("button", { name: "刷新 代理-B" })).toBeInTheDocument();
+    expect(within(tunnelCard).getByRole("button", { name: "停止 代理-B" })).toBeInTheDocument();
+    expect(within(tunnelCard).getByRole("button", { name: "编辑 代理-B" })).toBeInTheDocument();
+    expect(within(tunnelCard).getByRole("button", { name: "删除 代理-B" })).toBeInTheDocument();
   });
 });

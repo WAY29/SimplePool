@@ -283,6 +283,7 @@ func TestGroupAndTunnelRepositoriesRoundTrip(t *testing.T) {
 		ControllerSecretCiphertext: []byte("cipher"),
 		ControllerSecretNonce:      []byte("nonce"),
 		RuntimeDir:                 filepath.Join(t.TempDir(), "runtime"),
+		RuntimeConfigJSON:          `{"outbounds":[{"tag":"node-1"}]}`,
 		LastRefreshError:           "",
 		CreatedAt:                  now,
 		UpdatedAt:                  now,
@@ -293,6 +294,7 @@ func TestGroupAndTunnelRepositoriesRoundTrip(t *testing.T) {
 
 	tunnel.Status = domain.TunnelStatusDegraded
 	tunnel.LastRefreshError = "probe failed"
+	tunnel.RuntimeConfigJSON = `{"outbounds":[{"tag":"node-2"}]}`
 	tunnel.UpdatedAt = now.Add(2 * time.Hour)
 	if err := repos.Tunnels.Update(ctx, tunnel); err != nil {
 		t.Fatalf("Tunnels.Update() error = %v", err)
@@ -304,6 +306,9 @@ func TestGroupAndTunnelRepositoriesRoundTrip(t *testing.T) {
 	}
 	if gotTunnel.Status != domain.TunnelStatusDegraded {
 		t.Fatalf("Status = %q, want degraded", gotTunnel.Status)
+	}
+	if gotTunnel.RuntimeConfigJSON != tunnel.RuntimeConfigJSON {
+		t.Fatalf("RuntimeConfigJSON = %q, want %q", gotTunnel.RuntimeConfigJSON, tunnel.RuntimeConfigJSON)
 	}
 }
 
