@@ -191,6 +191,22 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*Vi
 	return toView(updated), nil
 }
 
+func (s *Service) SetEnabled(ctx context.Context, id string, enabled bool) (*View, error) {
+	current, err := s.nodes.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if current.Enabled == enabled {
+		return toView(current), nil
+	}
+	current.Enabled = enabled
+	current.UpdatedAt = s.now().UTC()
+	if err := s.nodes.Update(ctx, current); err != nil {
+		return nil, err
+	}
+	return toView(current), nil
+}
+
 func (s *Service) Delete(ctx context.Context, id string) error {
 	return s.nodes.DeleteByID(ctx, id)
 }

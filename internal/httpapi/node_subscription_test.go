@@ -64,6 +64,13 @@ func TestNodeAndSubscriptionRoutes(t *testing.T) {
 		t.Fatalf("PUT /api/nodes/:id status = %d, want 200", updateNodeResp.Code)
 	}
 
+	setEnabledResp := performJSON(t, router, http.MethodPut, "/api/nodes/"+nodeID+"/enabled", token, map[string]any{
+		"enabled": true,
+	})
+	if setEnabledResp.Code != http.StatusOK {
+		t.Fatalf("PUT /api/nodes/:id/enabled status = %d, want 200", setEnabledResp.Code)
+	}
+
 	importResp := performJSON(t, router, http.MethodPost, "/api/nodes/import", token, map[string]any{
 		"payload": "trojan://pass@example.com:443?security=tls#TR-1",
 	})

@@ -277,6 +277,13 @@ export const api = {
         body: input,
       });
     },
+    setEnabled(token: string, id: string, enabled: boolean) {
+      return request<NodeView>(`/api/nodes/${id}/enabled`, {
+        method: "PUT",
+        token,
+        body: { enabled },
+      });
+    },
     remove(token: string, id: string) {
       return request<void>(`/api/nodes/${id}`, {
         method: "DELETE",

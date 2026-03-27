@@ -78,7 +78,7 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
       updated_at: "2026-03-26T10:00:00Z",
     },
   ];
-  const groupMembers = options.groupMembers ?? {
+  let groupMembers = structuredClone(options.groupMembers ?? {
     "group-1": [
       {
         id: "node-1",
@@ -95,7 +95,7 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
         updated_at: "2026-03-26T10:00:00Z",
       },
     ],
-  };
+  });
   const tunnels = options.tunnels ?? [
     {
       id: "tunnel-1",
@@ -167,7 +167,51 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
             }
           : item,
       );
+      groupMembers = Object.fromEntries(
+        Object.entries(groupMembers).map(([groupID, members]) => [
+          groupID,
+          members.map((item) =>
+            item.id === nodeID
+              ? {
+                  ...item,
+                  last_status: result.success ? "healthy" : "unreachable",
+                  last_latency_ms: result.success ? result.latency_ms : null,
+                  last_checked_at: checkedAt,
+                }
+              : item,
+          ),
+        ]),
+      );
       return jsonResponse(200, result);
+    }
+    const setEnabledMatch = url.match(/\/api\/nodes\/([^/]+)\/enabled$/);
+    if (setEnabledMatch && init?.method === "PUT") {
+      const nodeID = setEnabledMatch[1];
+      const payload = init?.body ? JSON.parse(String(init.body)) as { enabled?: boolean } : {};
+      const nextEnabled = Boolean(payload.enabled);
+      nodes = nodes.map((item) =>
+        item.id === nodeID
+          ? {
+              ...item,
+              enabled: nextEnabled,
+            }
+          : item,
+      );
+      groupMembers = Object.fromEntries(
+        Object.entries(groupMembers).map(([groupID, members]) => [
+          groupID,
+          members.map((item) =>
+            item.id === nodeID
+              ? {
+                  ...item,
+                  enabled: nextEnabled,
+                }
+              : item,
+          ),
+        ]),
+      );
+      const updatedNode = nodes.find((item) => item.id === nodeID) ?? { id: nodeID, enabled: nextEnabled };
+      return jsonResponse(200, updatedNode);
     }
     if (url.endsWith("/api/groups")) {
       return jsonResponse(200, groups);
@@ -647,5 +691,158 @@ describe("App", () => {
       ([input, init]) => String(input).endsWith("/api/nodes") && (!init?.method || init.method === "GET"),
     );
     expect(nodeListCalls).toHaveLength(2);
+  });
+
+  it("节点组页支持直接探测组成员", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      nodes: [
+        {
+          id: "node-1",
+          name: "香港-A1",
+          source_kind: "manual",
+          protocol: "trojan",
+          server: "192.168.1.101",
+          server_port: 443,
+          transport_json: "{}",
+          tls_json: "{}",
+          raw_payload_json: "{}",
+          enabled: true,
+          last_latency_ms: null,
+          last_status: "unknown",
+          last_checked_at: null,
+          has_credential: true,
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
+      ],
+      groupMembers: {
+        "group-1": [
+          {
+            id: "node-1",
+            name: "香港-A1",
+            source_kind: "manual",
+            protocol: "trojan",
+            server: "192.168.1.101",
+            server_port: 443,
+            enabled: true,
+            last_latency_ms: null,
+            last_status: "unknown",
+            last_checked_at: null,
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+        ],
+      },
+      probeDelays: {
+        "node-1": 20,
+      },
+      probeResults: {
+        "node-1": {
+          success: true,
+          latency_ms: 91,
+        },
+      },
+      tunnels: [],
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点组" })).toBeInTheDocument();
+
+    const probeButton = await screen.findByRole("button", { name: "测试 香港-A1 延迟" });
+    await user.click(probeButton);
+    expect(probeButton).toBeDisabled();
+
+    await waitFor(() => {
+      expect(screen.getByText("91 ms")).toBeInTheDocument();
+    });
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).endsWith("/api/nodes/node-1/probe")),
+    ).toBe(true);
+  });
+
+  it("节点组页支持直接禁用和启用组成员", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      nodes: [
+        {
+          id: "node-1",
+          name: "香港-A1",
+          source_kind: "manual",
+          protocol: "trojan",
+          server: "192.168.1.101",
+          server_port: 443,
+          transport_json: "{}",
+          tls_json: "{}",
+          raw_payload_json: "{}",
+          enabled: true,
+          last_latency_ms: 42,
+          last_status: "healthy",
+          last_checked_at: "2026-03-26T10:04:00Z",
+          has_credential: true,
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
+      ],
+      groupMembers: {
+        "group-1": [
+          {
+            id: "node-1",
+            name: "香港-A1",
+            source_kind: "manual",
+            protocol: "trojan",
+            server: "192.168.1.101",
+            server_port: 443,
+            enabled: true,
+            last_latency_ms: 42,
+            last_status: "healthy",
+            last_checked_at: "2026-03-26T10:04:00Z",
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+        ],
+      },
+      tunnels: [],
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点组" })).toBeInTheDocument();
+
+    const disableButton = await screen.findByRole("button", { name: "禁用 香港-A1" });
+    await user.click(disableButton);
+
+    await waitFor(() => {
+      expect(screen.getByText("已禁用")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "启用 香港-A1" })).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/api/nodes/node-1/enabled")
+          && init?.method === "PUT"
+          && String(init.body).includes("\"enabled\":false"),
+      ),
+    ).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "启用 香港-A1" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("已禁用")).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "禁用 香港-A1" })).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/api/nodes/node-1/enabled")
+          && init?.method === "PUT"
+          && String(init.body).includes("\"enabled\":true"),
+      ),
+    ).toBe(true);
   });
 });

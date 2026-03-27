@@ -31,6 +31,10 @@ type nodeProbeRequest struct {
 	IDs   []string `json:"ids"`
 }
 
+type nodeEnabledRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
 func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *node.Service) {
 	group := engine.Group("/api/nodes")
 	group.Use(auth.Middleware(authService))
@@ -89,6 +93,19 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 			RawPayloadJSON: request.RawPayloadJSON,
 			Credential:     []byte(request.Credential),
 		})
+		if err != nil {
+			handleNodeError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, item)
+	})
+	group.PUT("/:id/enabled", func(c *gin.Context) {
+		var request nodeEnabledRequest
+		if err := c.ShouldBindJSON(&request); err != nil || request.Enabled == nil {
+			badRequest(c, "invalid node enabled payload")
+			return
+		}
+		item, err := service.SetEnabled(c.Request.Context(), c.Param("id"), *request.Enabled)
 		if err != nil {
 			handleNodeError(c, err)
 			return

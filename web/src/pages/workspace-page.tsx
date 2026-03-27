@@ -31,7 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuthorizedRequest } from "@/hooks/use-authorized-request";
 import { usePersistedViewMode } from "@/hooks/use-persisted-view-mode";
 import { useShellMetrics } from "@/hooks/use-shell-metrics";
-import { api, type GroupMemberView, type GroupView, type TunnelView } from "@/lib/api";
+import { api, type GroupMemberView, type GroupView, type ProbeBatchResult, type TunnelView } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   formatDateTime,
@@ -85,6 +85,9 @@ export function WorkspacePage() {
   const [tunnelForm, setTunnelForm] = useState<TunnelFormValues>(defaultTunnelForm);
   const [tunnelErrors, setTunnelErrors] = useState<Partial<Record<keyof TunnelFormValues, string>>>({});
   const [tunnelSubmitting, setTunnelSubmitting] = useState(false);
+  const [probeResults, setProbeResults] = useState<Record<string, ProbeBatchResult>>({});
+  const [probingNodeIDs, setProbingNodeIDs] = useState<Record<string, boolean>>({});
+  const [togglingNodeIDs, setTogglingNodeIDs] = useState<Record<string, boolean>>({});
   const groupSubmitLabel = groupSubmitting ? "提交中..." : editingGroup ? "保存修改" : "创建分组";
   const tunnelSubmitLabel = tunnelSubmitting ? "提交中..." : editingTunnel ? "保存修改" : "创建隧道";
   const [memberViewMode, setMemberViewMode] = usePersistedViewMode("simplepool.workspace.members.view_mode", "grid");
@@ -111,6 +114,16 @@ export function WorkspacePage() {
         [item.name, item.listen_host, formatTunnelStatus(item.status)].join(" ").toLowerCase().includes(tunnelKeyword),
       );
   const activeTunnelCount = groupTunnels.filter((item) => item.status === "running" || item.status === "starting").length;
+  const probeStates = Object.fromEntries(
+    members.map((item) => [
+      item.id,
+      {
+        probing: Boolean(probingNodeIDs[item.id]),
+        latencyMS: probeResults[item.id]?.latency_ms ?? item.last_latency_ms,
+        success: probeResults[item.id]?.success,
+      },
+    ]),
+  );
 
   async function loadWorkspace(preferredGroupID?: string | null) {
     setLoading(true);
@@ -166,6 +179,80 @@ export function WorkspacePage() {
       setSelectedTunnelID(nextTunnelID);
     }
   }, [groupTunnels, selectedTunnelID]);
+
+  function applyProbeResult(nodeID: string, result: { success: boolean; latency_ms?: number | null; checked_at?: string | null }) {
+    setMembers((current) =>
+      current.map((item) => {
+        if (item.id !== nodeID) {
+          return item;
+        }
+        const nextStatus = result.success ? "healthy" : "unreachable";
+        const nextItem = {
+          ...item,
+          last_status: nextStatus,
+          last_latency_ms: result.success ? result.latency_ms ?? null : null,
+          last_checked_at: result.checked_at ?? new Date().toISOString(),
+        };
+        metrics.reconcileAvailableNode(item, nextItem);
+        return nextItem;
+      }),
+    );
+  }
+
+  async function probeMember(item: GroupMemberView) {
+    setProbingNodeIDs((current) => ({ ...current, [item.id]: true }));
+    try {
+      const result = await run((token) => api.nodes.probe(token, item.id, true));
+      const batchResult = {
+        node_id: item.id,
+        ...result,
+      };
+      setProbeResults((current) => ({
+        ...current,
+        [item.id]: batchResult,
+      }));
+      applyProbeResult(item.id, batchResult);
+      toast.success(result.success ? `${item.name} 延迟 ${result.latency_ms} ms` : `${item.name} 探测失败`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "节点探测失败");
+    } finally {
+      setProbingNodeIDs((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+    }
+  }
+
+  async function toggleMemberEnabled(item: GroupMemberView) {
+    const nextEnabled = !item.enabled
+    setTogglingNodeIDs((current) => ({ ...current, [item.id]: true }));
+    try {
+      await run((token) => api.nodes.setEnabled(token, item.id, nextEnabled));
+      setMembers((current) =>
+        current.map((member) => {
+          if (member.id !== item.id) {
+            return member;
+          }
+          const nextItem = {
+            ...member,
+            enabled: nextEnabled,
+          };
+          metrics.reconcileAvailableNode(member, nextItem);
+          return nextItem;
+        }),
+      );
+      toast.success(nextEnabled ? `${item.name} 已启用` : `${item.name} 已禁用`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "节点状态切换失败");
+    } finally {
+      setTogglingNodeIDs((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+    }
+  }
 
   function openCreateGroup() {
     setEditingGroup(null);
@@ -538,7 +625,15 @@ export function WorkspacePage() {
               {loading || memberLoading ? (
                 <SectionLoading label="正在加载组成员..." />
               ) : (
-                <NodeCollectionView emptyMessage="当前分组没有匹配节点" items={members} mode={memberViewMode} />
+                <NodeCollectionView
+                  emptyMessage="当前分组没有匹配节点"
+                  items={members}
+                  mode={memberViewMode}
+                  onProbe={(item) => void probeMember(item as GroupMemberView)}
+                  onToggleEnabled={(item) => void toggleMemberEnabled(item as GroupMemberView)}
+                  probeStates={probeStates}
+                  toggleBusyStates={togglingNodeIDs}
+                />
               )}
             </CardContent>
           </Card>

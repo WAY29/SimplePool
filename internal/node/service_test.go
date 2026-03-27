@@ -79,6 +79,54 @@ func TestNodeServiceCRUDAndToggle(t *testing.T) {
 	}
 }
 
+func TestNodeServiceSetEnabledPreservesProbeState(t *testing.T) {
+	ctx := context.Background()
+	service := newNodeService(t)
+
+	created, err := service.CreateManual(ctx, node.CreateManualInput{
+		Name:           "HK-A",
+		Protocol:       "vmess",
+		Server:         "1.1.1.1",
+		ServerPort:     443,
+		TransportJSON:  `{"network":"tcp"}`,
+		TLSJSON:        `{"enabled":true}`,
+		RawPayloadJSON: `{"uuid":"u-1"}`,
+		Credential:     []byte(`{"uuid":"u-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateManual() error = %v", err)
+	}
+
+	if _, err := service.ProbeByID(ctx, created.ID, true); err != nil {
+		t.Fatalf("ProbeByID() error = %v", err)
+	}
+
+	disabled, err := service.SetEnabled(ctx, created.ID, false)
+	if err != nil {
+		t.Fatalf("SetEnabled(false) error = %v", err)
+	}
+	if disabled.Enabled {
+		t.Fatalf("SetEnabled(false) = %+v, want disabled node", disabled)
+	}
+	if disabled.LastStatus != domain.NodeStatusHealthy {
+		t.Fatalf("SetEnabled(false) LastStatus = %q, want healthy", disabled.LastStatus)
+	}
+	if disabled.LastLatencyMS == nil || *disabled.LastLatencyMS != 55 {
+		t.Fatalf("SetEnabled(false) LastLatencyMS = %v, want 55", disabled.LastLatencyMS)
+	}
+
+	enabled, err := service.SetEnabled(ctx, created.ID, true)
+	if err != nil {
+		t.Fatalf("SetEnabled(true) error = %v", err)
+	}
+	if !enabled.Enabled {
+		t.Fatalf("SetEnabled(true) = %+v, want enabled node", enabled)
+	}
+	if enabled.LastStatus != domain.NodeStatusHealthy {
+		t.Fatalf("SetEnabled(true) LastStatus = %q, want healthy", enabled.LastStatus)
+	}
+}
+
 func TestNodeServiceImportAndProbeCaching(t *testing.T) {
 	ctx := context.Background()
 	prober := &fakeProber{

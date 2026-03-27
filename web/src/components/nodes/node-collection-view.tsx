@@ -1,4 +1,4 @@
-import { Clock3, LayoutGrid, LoaderCircle, Rows3 } from "lucide-react";
+import { Ban, Check, Clock3, LayoutGrid, LoaderCircle, Rows3 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -68,6 +68,8 @@ export function NodeCollectionView({
   emptyMessage,
   probeStates,
   onProbe,
+  toggleBusyStates,
+  onToggleEnabled,
 }: {
   items: NodeCollectionItem[];
   mode: NodeCollectionViewMode;
@@ -76,6 +78,8 @@ export function NodeCollectionView({
   emptyMessage?: string;
   probeStates?: Record<string, NodeProbeState>;
   onProbe?: (item: NodeCollectionItem) => void;
+  toggleBusyStates?: Record<string, boolean>;
+  onToggleEnabled?: (item: NodeCollectionItem) => void;
 }) {
   if (items.length === 0) {
     return (
@@ -96,7 +100,7 @@ export function NodeCollectionView({
               <TableHeaderCell>延迟</TableHeaderCell>
               <TableHeaderCell>地区</TableHeaderCell>
               <TableHeaderCell>最近探测</TableHeaderCell>
-              {onProbe ? <TableHeaderCell className="w-[84px] text-right">探测</TableHeaderCell> : null}
+              {onProbe || onToggleEnabled ? <TableHeaderCell className="w-[160px] text-right">操作</TableHeaderCell> : null}
             </tr>
           </TableHead>
           <TableBody>
@@ -104,6 +108,7 @@ export function NodeCollectionView({
               <TableRow
                 className={cn(
                   onSelect ? "cursor-pointer" : "",
+                  !item.enabled ? "opacity-55 grayscale" : "",
                   probeStates?.[item.id]?.probing ? "opacity-55" : "",
                   selectedId === item.id ? "bg-[rgba(109,77,243,0.14)]" : "",
                 )}
@@ -155,13 +160,24 @@ export function NodeCollectionView({
                   </span>
                 </TableCell>
                 <TableCell>{formatRelativeTime(item.last_checked_at)}</TableCell>
-                {onProbe ? (
+                {onProbe || onToggleEnabled ? (
                   <TableCell className="text-right">
-                    <ProbeActionButton
-                      item={item}
-                      onProbe={onProbe}
-                      probing={Boolean(probeStates?.[item.id]?.probing)}
-                    />
+                    <div className="flex justify-end gap-2">
+                      {onToggleEnabled ? (
+                        <ToggleEnabledButton
+                          item={item}
+                          onToggleEnabled={onToggleEnabled}
+                          toggling={Boolean(toggleBusyStates?.[item.id])}
+                        />
+                      ) : null}
+                      {onProbe ? (
+                        <ProbeActionButton
+                          item={item}
+                          onProbe={onProbe}
+                          probing={Boolean(probeStates?.[item.id]?.probing)}
+                        />
+                      ) : null}
+                    </div>
                   </TableCell>
                 ) : null}
               </TableRow>
@@ -189,8 +205,19 @@ export function NodeCollectionView({
                 </span>
                 <p className="line-clamp-2 text-[0.95rem] font-semibold leading-6 text-white">{item.name}</p>
               </div>
-              {onProbe ? (
-                <ProbeActionButton item={item} onProbe={onProbe} probing={Boolean(probeState?.probing)} />
+              {onProbe || onToggleEnabled ? (
+                <div className="flex items-center gap-2">
+                  {onToggleEnabled ? (
+                    <ToggleEnabledButton
+                      item={item}
+                      onToggleEnabled={onToggleEnabled}
+                      toggling={Boolean(toggleBusyStates?.[item.id])}
+                    />
+                  ) : null}
+                  {onProbe ? (
+                    <ProbeActionButton item={item} onProbe={onProbe} probing={Boolean(probeState?.probing)} />
+                  ) : null}
+                </div>
               ) : null}
             </div>
 
@@ -223,6 +250,7 @@ export function NodeCollectionView({
               aria-pressed={selectedId === item.id}
               className={cn(
                 "grid min-h-[144px] gap-4 rounded-[24px] border px-4 py-3.5 text-left transition-colors",
+                !item.enabled ? "opacity-55 grayscale" : "",
                 probeState?.probing ? "opacity-55" : "",
                 selectedId === item.id
                   ? "border-violet-400/35 bg-[linear-gradient(180deg,rgba(42,38,74,0.95),rgba(26,31,58,0.92))] shadow-[0_0_0_1px_rgba(167,139,250,0.16)_inset]"
@@ -248,6 +276,7 @@ export function NodeCollectionView({
           <div
             className={cn(
               "grid min-h-[144px] gap-4 rounded-[24px] border px-4 py-3.5 text-left transition-colors",
+              !item.enabled ? "opacity-55 grayscale" : "",
               probeState?.probing ? "opacity-55" : "",
               selectedId === item.id
                 ? "border-violet-400/35 bg-[linear-gradient(180deg,rgba(42,38,74,0.95),rgba(26,31,58,0.92))] shadow-[0_0_0_1px_rgba(167,139,250,0.16)_inset]"
@@ -287,6 +316,44 @@ function ProbeActionButton({
       variant="ghost"
     >
       {probing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Clock3 className="h-4 w-4" />}
+    </Button>
+  );
+}
+
+function ToggleEnabledButton({
+  item,
+  toggling,
+  onToggleEnabled,
+}: {
+  item: NodeCollectionItem;
+  toggling: boolean;
+  onToggleEnabled: (item: NodeCollectionItem) => void;
+}) {
+  const label = `${item.enabled ? "禁用" : "启用"} ${item.name}`;
+  return (
+    <Button
+      aria-label={label}
+      className={cn(
+        "h-8 w-8 rounded-full border-white/10 bg-black/20 p-0 hover:bg-white/10",
+        item.enabled ? "text-rose-300 hover:text-rose-200" : "text-emerald-300 hover:text-emerald-200",
+      )}
+      disabled={toggling}
+      onClick={(event) => {
+        event.stopPropagation();
+        onToggleEnabled(item);
+      }}
+      size="sm"
+      title={label}
+      type="button"
+      variant="ghost"
+    >
+      {toggling ? (
+        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+      ) : item.enabled ? (
+        <Ban className="h-3.5 w-3.5" />
+      ) : (
+        <Check className="h-3.5 w-3.5" />
+      )}
     </Button>
   );
 }
