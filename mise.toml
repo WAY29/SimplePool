@@ -5,7 +5,7 @@ node = "22.12.0"
 [tasks.dev]
 description = "启动"
 depends = ["web:build"]
-run = "go run -tags 'with_quic with_dhcp with_wireguard with_clash_api' ./cmd/simplepool-api"
+run = "go run -tags 'with_quic with_dhcp with_wireguard with_clash_api with_naive_outbound' ./cmd/simplepool-api"
 
 [tasks.build]
 description = "构建"
