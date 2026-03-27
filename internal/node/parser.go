@@ -124,13 +124,23 @@ func parseTrojan(line string) (ImportedNode, error) {
 	if err != nil {
 		return ImportedNode{}, ErrInvalidPayload
 	}
+	query := parsed.Query()
 	port, err := parsePort(parsed.Port())
 	if err != nil {
 		return ImportedNode{}, err
 	}
-	tlsJSON, _ := normalizeJSON(fmt.Sprintf(`{"enabled":true,"server_name":"%s"}`, fallbackName(parsed.Query().Get("sni"), parsed.Query().Get("peer"))))
-	transportJSON, _ := normalizeJSON(fmt.Sprintf(`{"type":"%s"}`, fallbackName(parsed.Query().Get("type"), "tcp")))
-	rawJSON, _ := normalizeJSON(fmt.Sprintf(`{"security":"%s","host":"%s","path":"%s"}`, parsed.Query().Get("security"), parsed.Query().Get("host"), parsed.Query().Get("path")))
+	transportJSON, _ := normalizeJSONMap(buildTransportOptions(
+		fallbackName(query.Get("type"), "tcp"),
+		query.Get("host"),
+		query.Get("path"),
+		firstNonEmpty(query.Get("serviceName"), query.Get("service_name")),
+	))
+	tlsJSON, _ := normalizeJSONMap(buildTLSOptions(
+		true,
+		fallbackName(query.Get("sni"), query.Get("peer")),
+		queryBool(query, "allowInsecure", "allow_insecure", "skip-cert-verify", "insecure"),
+	))
+	rawJSON, _ := normalizeJSON(fmt.Sprintf(`{"security":"%s"}`, query.Get("security")))
 	credential, _ := json.Marshal(map[string]any{
 		"password": parsed.User.Username(),
 	})
@@ -162,9 +172,14 @@ func parseVMess(line string) (ImportedNode, error) {
 	if err != nil {
 		return ImportedNode{}, err
 	}
-	transportJSON, _ := normalizeJSON(fmt.Sprintf(`{"type":"%s","host":"%s","path":"%s"}`, fallbackName(payload["net"], "tcp"), payload["host"], payload["path"]))
+	transportJSON, _ := normalizeJSONMap(buildTransportOptions(
+		fallbackName(payload["net"], "tcp"),
+		payload["host"],
+		payload["path"],
+		firstNonEmpty(payload["serviceName"], payload["service_name"]),
+	))
 	tlsEnabled := payload["tls"] != ""
-	tlsJSON, _ := normalizeJSON(fmt.Sprintf(`{"enabled":%t,"server_name":"%s"}`, tlsEnabled, payload["sni"]))
+	tlsJSON, _ := normalizeJSONMap(buildTLSOptions(tlsEnabled, payload["sni"], parseBoolString(payload["allowInsecure"])))
 	rawJSON, _ := normalizeJSON(fmt.Sprintf(`{"aid":"%s","scy":"%s"}`, payload["aid"], payload["scy"]))
 	credential, _ := json.Marshal(map[string]any{
 		"uuid": payload["id"],
@@ -188,13 +203,23 @@ func parseVLESS(line string) (ImportedNode, error) {
 	if err != nil {
 		return ImportedNode{}, ErrInvalidPayload
 	}
+	query := parsed.Query()
 	port, err := parsePort(parsed.Port())
 	if err != nil {
 		return ImportedNode{}, err
 	}
-	transportJSON, _ := normalizeJSON(fmt.Sprintf(`{"type":"%s","host":"%s","path":"%s"}`, fallbackName(parsed.Query().Get("type"), "tcp"), parsed.Query().Get("host"), parsed.Query().Get("path")))
-	tlsJSON, _ := normalizeJSON(fmt.Sprintf(`{"enabled":%t,"server_name":"%s"}`, parsed.Query().Get("security") == "tls", fallbackName(parsed.Query().Get("sni"), parsed.Query().Get("host"))))
-	rawJSON, _ := normalizeJSON(fmt.Sprintf(`{"flow":"%s","encryption":"%s"}`, parsed.Query().Get("flow"), parsed.Query().Get("encryption")))
+	transportJSON, _ := normalizeJSONMap(buildTransportOptions(
+		fallbackName(query.Get("type"), "tcp"),
+		query.Get("host"),
+		query.Get("path"),
+		firstNonEmpty(query.Get("serviceName"), query.Get("service_name")),
+	))
+	tlsJSON, _ := normalizeJSONMap(buildTLSOptions(
+		query.Get("security") == "tls",
+		fallbackName(query.Get("sni"), query.Get("host")),
+		queryBool(query, "allowInsecure", "allow_insecure", "skip-cert-verify", "insecure"),
+	))
+	rawJSON, _ := normalizeJSON(fmt.Sprintf(`{"flow":"%s","encryption":"%s"}`, query.Get("flow"), query.Get("encryption")))
 	credential, _ := json.Marshal(map[string]any{
 		"uuid": parsed.User.Username(),
 	})
@@ -218,13 +243,18 @@ func parseHysteria2(line string) (ImportedNode, error) {
 	if err != nil {
 		return ImportedNode{}, ErrInvalidPayload
 	}
+	query := parsed.Query()
 	port, err := parsePort(parsed.Port())
 	if err != nil {
 		return ImportedNode{}, err
 	}
-	transportJSON, _ := normalizeJSON(fmt.Sprintf(`{"obfs":"%s","obfs_password":"%s"}`, parsed.Query().Get("obfs"), parsed.Query().Get("obfs-password")))
-	tlsJSON, _ := normalizeJSON(fmt.Sprintf(`{"enabled":true,"server_name":"%s","insecure":%t}`, fallbackName(parsed.Query().Get("sni"), parsed.Hostname()), parsed.Query().Get("insecure") == "1"))
-	rawJSON, _ := normalizeJSON(fmt.Sprintf(`{"up_mbps":"%s","down_mbps":"%s"}`, parsed.Query().Get("upmbps"), parsed.Query().Get("downmbps")))
+	transportJSON, _ := normalizeJSON(fmt.Sprintf(`{"obfs":"%s","obfs_password":"%s"}`, query.Get("obfs"), query.Get("obfs-password")))
+	tlsJSON, _ := normalizeJSONMap(buildTLSOptions(
+		true,
+		fallbackName(query.Get("sni"), parsed.Hostname()),
+		queryBool(query, "insecure", "allowInsecure", "allow_insecure", "skip-cert-verify"),
+	))
+	rawJSON, _ := normalizeJSON(fmt.Sprintf(`{"up_mbps":"%s","down_mbps":"%s"}`, query.Get("upmbps"), query.Get("downmbps")))
 	credential, _ := json.Marshal(map[string]any{
 		"password": parsed.User.Username(),
 	})
@@ -303,4 +333,66 @@ func queryValue(raw, key string) string {
 		return ""
 	}
 	return values.Get(key)
+}
+
+func normalizeJSONMap(payload map[string]any) (string, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return normalizeJSON(string(raw))
+}
+
+func buildTransportOptions(transportType, host, path, serviceName string) map[string]any {
+	result := map[string]any{
+		"type": transportType,
+	}
+	if strings.TrimSpace(host) != "" {
+		result["host"] = host
+	}
+	if strings.TrimSpace(path) != "" {
+		result["path"] = path
+	}
+	if strings.TrimSpace(serviceName) != "" {
+		result["service_name"] = serviceName
+	}
+	return result
+}
+
+func buildTLSOptions(enabled bool, serverName string, insecure bool) map[string]any {
+	result := map[string]any{
+		"enabled":     enabled,
+		"server_name": serverName,
+	}
+	if insecure {
+		result["insecure"] = true
+	}
+	return result
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func queryBool(values url.Values, keys ...string) bool {
+	for _, key := range keys {
+		if parseBoolString(values.Get(key)) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseBoolString(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
