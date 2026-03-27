@@ -7,3 +7,4 @@ internal/httpapi/webui/dist/
 *.db-wal
 coverage.out
 .env
+todo.md

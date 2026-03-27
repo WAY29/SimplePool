@@ -146,6 +146,7 @@ type fileLogWriter struct {
 	mu     sync.Mutex
 	stdout *os.File
 	stderr *os.File
+	level  sbLog.Level
 	now    func() time.Time
 }
 
@@ -530,7 +531,7 @@ func (s *Supervisor) Start(ctx context.Context, request StartRequest) error {
 		return err
 	}
 
-	writer, err := newFileLogWriter(request.Layout, s.now)
+	writer, err := newFileLogWriter(request.Layout, s.now, configuredLogLevel(formatted))
 	if err != nil {
 		s.fail(err)
 		return err
@@ -619,7 +620,7 @@ func (s *Supervisor) fail(err error) {
 	s.lastError = err
 }
 
-func newFileLogWriter(layout RuntimeLayout, now func() time.Time) (*fileLogWriter, error) {
+func newFileLogWriter(layout RuntimeLayout, now func() time.Time, level sbLog.Level) (*fileLogWriter, error) {
 	if err := os.MkdirAll(layout.RootDir, 0o755); err != nil {
 		return nil, err
 	}
@@ -635,12 +636,13 @@ func newFileLogWriter(layout RuntimeLayout, now func() time.Time) (*fileLogWrite
 	return &fileLogWriter{
 		stdout: stdout,
 		stderr: stderr,
+		level:  level,
 		now:    now,
 	}, nil
 }
 
 func (w *fileLogWriter) WriteMessage(level sbLog.Level, message string) {
-	if w == nil {
+	if w == nil || level > w.level {
 		return
 	}
 	target := w.stdout
@@ -651,6 +653,26 @@ func (w *fileLogWriter) WriteMessage(level sbLog.Level, message string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	_, _ = target.WriteString(line)
+}
+
+func configuredLogLevel(config []byte) sbLog.Level {
+	var payload struct {
+		Log map[string]any `json:"log"`
+	}
+	if err := json.Unmarshal(config, &payload); err != nil {
+		return sbLog.LevelInfo
+	}
+	rawLevel, _ := payload.Log["level"].(string)
+	switch logging.NormalizeLevel(rawLevel) {
+	case "debug":
+		return sbLog.LevelDebug
+	case "warn":
+		return sbLog.LevelWarn
+	case "error":
+		return sbLog.LevelError
+	default:
+		return sbLog.LevelInfo
+	}
 }
 
 func stripANSISequences(value string) string {

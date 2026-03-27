@@ -342,7 +342,7 @@ func TestNewRuntimeLayoutIncludesTunnelName(t *testing.T) {
 func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 	tempDir := t.TempDir()
 	layout := singbox.NewRuntimeGroupLayout(tempDir, "asia", "proxy-a")
-	compiler := &fakeCompiler{formatted: []byte("{\n  \"ok\": true\n}\n")}
+	compiler := &fakeCompiler{formatted: []byte("{\n  \"log\": {\n    \"level\": \"warn\"\n  }\n}\n")}
 	box := &fakeBox{}
 	factory := &fakeFactory{box: box}
 	supervisor := singbox.NewSupervisor(singbox.SupervisorOptions{
@@ -373,6 +373,7 @@ func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 		t.Fatalf("Stat(config) error = %v, want not exist", err)
 	}
 
+	factory.writer.WriteMessage(sbLog.LevelTrace, "trace hidden")
 	factory.writer.WriteMessage(sbLog.LevelInfo, "[0041] [\x1b[38;5;226m1273129477\x1b[0m 0ms]")
 	factory.writer.WriteMessage(sbLog.LevelError, "runtime failed")
 
@@ -394,14 +395,56 @@ func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(stderr) error = %v", err)
 	}
+	if len(stdout) != 0 {
+		t.Fatalf("stdout log = %q, want info/trace filtered at warn level", stdout)
+	}
+	if bytes.Contains(stdout, []byte("\x1b[")) {
+		t.Fatalf("stdout log = %q, want ansi escape removed", stdout)
+	}
+	if !bytes.Contains(stderr, []byte("runtime failed")) {
+		t.Fatalf("stderr log = %q, want runtime failed", stderr)
+	}
+	if bytes.Contains(stderr, []byte("trace hidden")) {
+		t.Fatalf("stderr log = %q, want trace filtered", stderr)
+	}
+}
+
+func TestSupervisorWritesInfoWithoutANSIAtInfoLevel(t *testing.T) {
+	tempDir := t.TempDir()
+	layout := singbox.NewRuntimeGroupLayout(tempDir, "asia", "proxy-a")
+	compiler := &fakeCompiler{formatted: []byte("{\n  \"log\": {\n    \"level\": \"info\"\n  }\n}\n")}
+	box := &fakeBox{}
+	factory := &fakeFactory{box: box}
+	supervisor := singbox.NewSupervisor(singbox.SupervisorOptions{
+		Compiler: compiler,
+		Factory:  factory,
+		Now: func() time.Time {
+			return time.Date(2026, 3, 26, 12, 0, 0, 0, time.UTC)
+		},
+	})
+
+	if err := supervisor.Start(context.Background(), singbox.StartRequest{
+		Layout: layout,
+		Config: []byte(`{"raw":true}`),
+	}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	factory.writer.WriteMessage(sbLog.LevelInfo, "[0041] [\x1b[38;5;226m1273129477\x1b[0m 0ms]")
+
+	if err := supervisor.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	stdout, err := os.ReadFile(layout.StdoutLogPath)
+	if err != nil {
+		t.Fatalf("ReadFile(stdout) error = %v", err)
+	}
 	if bytes.Contains(stdout, []byte("\x1b[")) {
 		t.Fatalf("stdout log = %q, want ansi escape removed", stdout)
 	}
 	if !bytes.Contains(stdout, []byte("[0041] [1273129477 0ms]")) {
 		t.Fatalf("stdout log = %q, want cleaned latency line", stdout)
-	}
-	if !bytes.Contains(stderr, []byte("runtime failed")) {
-		t.Fatalf("stderr log = %q, want runtime failed", stderr)
 	}
 }
 
