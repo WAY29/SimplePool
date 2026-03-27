@@ -151,6 +151,7 @@ type RequestOptions = {
   token?: string;
   body?: unknown;
   headers?: HeadersInit;
+  signal?: AbortSignal;
 };
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -207,9 +208,64 @@ async function request<T>(path: string, options: RequestOptions = {}) {
     method: options.method ?? "GET",
     headers,
     body,
+    signal: options.signal,
   });
 
   return parseResponse<T>(response);
+}
+
+async function stream<T>(
+  path: string,
+  options: RequestOptions & { onMessage: (payload: T) => void },
+) {
+  const headers = new Headers(options.headers);
+  if (options.token) {
+    headers.set("Authorization", `Bearer ${options.token}`);
+  }
+
+  const response = await fetch(path, {
+    method: options.method ?? "GET",
+    headers,
+    signal: options.signal,
+  });
+
+  if (!response.ok) {
+    await parseResponse(response);
+    return;
+  }
+
+  if (!response.body) {
+    throw new APIError(response.status, "stream_unavailable", "流式响应不可用");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex = buffer.indexOf("\n");
+      for (; newlineIndex >= 0; newlineIndex = buffer.indexOf("\n")) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line) {
+          continue;
+        }
+        options.onMessage(safeJSONParse(line) as T);
+      }
+    }
+    const tail = buffer.trim();
+    if (tail) {
+      options.onMessage(safeJSONParse(tail) as T);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export const api = {
@@ -382,6 +438,13 @@ export const api = {
     members(token: string, id: string) {
       return request<GroupMemberView[]>(`/api/groups/${id}/members`, {
         token,
+      });
+    },
+    streamMembers(token: string, id: string, signal: AbortSignal, onMessage: (payload: GroupMemberView) => void) {
+      return stream<GroupMemberView>(`/api/groups/${id}/members/stream`, {
+        token,
+        signal,
+        onMessage,
       });
     },
   },

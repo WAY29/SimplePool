@@ -18,15 +18,17 @@ var (
 )
 
 type Options struct {
-	Groups store.GroupRepository
-	Nodes  store.NodeRepository
-	Now    func() time.Time
+	Groups        store.GroupRepository
+	Nodes         store.NodeRepository
+	MemberUpdates *MemberUpdateBroker
+	Now           func() time.Time
 }
 
 type Service struct {
-	groups store.GroupRepository
-	nodes  store.NodeRepository
-	now    func() time.Time
+	groups        store.GroupRepository
+	nodes         store.NodeRepository
+	memberUpdates *MemberUpdateBroker
+	now           func() time.Time
 }
 
 type CreateInput struct {
@@ -75,10 +77,14 @@ func NewService(options Options) *Service {
 	if now == nil {
 		now = time.Now
 	}
+	if options.MemberUpdates == nil {
+		options.MemberUpdates = NewMemberUpdateBroker()
+	}
 	return &Service{
-		groups: options.Groups,
-		nodes:  options.Nodes,
-		now:    now,
+		groups:        options.Groups,
+		nodes:         options.Nodes,
+		memberUpdates: options.MemberUpdates,
+		now:           now,
 	}
 }
 
@@ -153,6 +159,38 @@ func (s *Service) ListMembers(ctx context.Context, id string) ([]*MemberView, er
 	return s.listMembersByFilter(ctx, filter)
 }
 
+func (s *Service) SubscribeMemberUpdates(ctx context.Context, id string) (<-chan *MemberView, func(), error) {
+	if _, err := s.groups.GetByID(ctx, id); err != nil {
+		return nil, nil, err
+	}
+	updates, unsubscribe := s.ensureMemberUpdates().Subscribe(id)
+	return updates, unsubscribe, nil
+}
+
+func (s *Service) PublishNodeUpdate(ctx context.Context, nodeID string) error {
+	item, err := s.nodes.GetByID(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	groups, err := s.groups.List(ctx)
+	if err != nil {
+		return err
+	}
+	member := toMemberView(item)
+	broker := s.ensureMemberUpdates()
+	for _, groupItem := range groups {
+		filter, compileErr := compileFilter(groupItem.FilterRegex)
+		if compileErr != nil {
+			return compileErr
+		}
+		if !filter.MatchString(item.Name) {
+			continue
+		}
+		broker.Publish(groupItem.ID, member)
+	}
+	return nil
+}
+
 func (s *Service) listMembersByFilter(ctx context.Context, filter *regexp.Regexp) ([]*MemberView, error) {
 	nodes, err := s.nodes.List(ctx)
 	if err != nil {
@@ -221,4 +259,11 @@ func toMemberView(item *domain.Node) *MemberView {
 		CreatedAt:            item.CreatedAt,
 		UpdatedAt:            item.UpdatedAt,
 	}
+}
+
+func (s *Service) ensureMemberUpdates() *MemberUpdateBroker {
+	if s.memberUpdates == nil {
+		s.memberUpdates = NewMemberUpdateBroker()
+	}
+	return s.memberUpdates
 }

@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/WAY29/SimplePool/internal/auth"
 	"github.com/WAY29/SimplePool/internal/group"
@@ -83,6 +85,51 @@ func registerGroupRoutes(engine *gin.Engine, authService *auth.Service, service 
 			return
 		}
 		c.JSON(http.StatusOK, items)
+	})
+	routerGroup.GET("/:id/members/stream", func(c *gin.Context) {
+		updates, unsubscribe, err := service.SubscribeMemberUpdates(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			handleGroupError(c, err)
+			return
+		}
+		defer unsubscribe()
+
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			internalError(c, "stream not supported")
+			return
+		}
+
+		c.Header("Content-Type", "application/x-ndjson")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		c.Status(http.StatusOK)
+		flusher.Flush()
+
+		encoder := json.NewEncoder(c.Writer)
+		heartbeat := time.NewTicker(15 * time.Second)
+		defer heartbeat.Stop()
+
+		for {
+			select {
+			case <-c.Request.Context().Done():
+				return
+			case item, ok := <-updates:
+				if !ok {
+					return
+				}
+				if err := encoder.Encode(item); err != nil {
+					return
+				}
+				flusher.Flush()
+			case <-heartbeat.C:
+				if _, err := c.Writer.Write([]byte("\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
 	})
 }
 

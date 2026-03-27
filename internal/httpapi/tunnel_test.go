@@ -33,6 +33,11 @@ func TestTunnelRoutesHappyPath(t *testing.T) {
 		t.Fatalf("GET /api/tunnels/:id status = %d, want 200", getResp.Code)
 	}
 
+	refreshResp := performJSON(t, router, http.MethodPost, "/api/tunnels/"+tunnelID+"/refresh", token, map[string]any{})
+	if refreshResp.Code != http.StatusOK {
+		t.Fatalf("POST /api/tunnels/:id/refresh status = %d, want 200", refreshResp.Code)
+	}
+
 	updateResp := performJSON(t, router, http.MethodPut, "/api/tunnels/"+tunnelID, token, map[string]any{
 		"name":     "proxy-b",
 		"group_id": "group-us",
@@ -41,11 +46,6 @@ func TestTunnelRoutesHappyPath(t *testing.T) {
 	})
 	if updateResp.Code != http.StatusOK {
 		t.Fatalf("PUT /api/tunnels/:id status = %d, want 200", updateResp.Code)
-	}
-
-	refreshResp := performJSON(t, router, http.MethodPost, "/api/tunnels/"+tunnelID+"/refresh", token, map[string]any{})
-	if refreshResp.Code != http.StatusOK {
-		t.Fatalf("POST /api/tunnels/:id/refresh status = %d, want 200", refreshResp.Code)
 	}
 
 	eventsResp := perform(t, router, http.MethodGet, "/api/tunnels/"+tunnelID+"/events", token, nil)

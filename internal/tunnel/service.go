@@ -739,6 +739,7 @@ func (s *Service) prepareRefreshRuntime(ctx context.Context, tunnelID string, cu
 
 	candidates := make([]runtimeCandidate, 0, len(nodes))
 	runtimeNodes := make([]singbox.RuntimeNode, 0, len(nodes))
+	cachedNodes := make([]*domain.Node, 0, len(nodes))
 	for _, item := range nodes {
 		target, runtimeNode, err := s.buildRuntimeNode(item)
 		if err != nil {
@@ -747,6 +748,11 @@ func (s *Service) prepareRefreshRuntime(ctx context.Context, tunnelID string, cu
 		runtimeNodes = append(runtimeNodes, runtimeNode)
 		if item.ID == currentNodeID {
 			continue
+		}
+		if _, ok, err := s.cachedSuccessfulProbeResult(ctx, item.ID); err != nil {
+			return nil, err
+		} else if ok {
+			cachedNodes = append(cachedNodes, item)
 		}
 		candidates = append(candidates, runtimeCandidate{
 			item:        item,
@@ -759,19 +765,15 @@ func (s *Service) prepareRefreshRuntime(ctx context.Context, tunnelID string, cu
 		return nil, ErrNoAvailableNodes
 	}
 
-	availableNodes, err := s.probeAvailableCandidates(ctx, tunnelID, candidates)
-	if err != nil {
-		return nil, err
-	}
-	if len(availableNodes) == 0 {
-		return nil, ErrNoAvailableNodes
+	if len(cachedNodes) > 0 {
+		selectedIndex, err := cryptoRandomIndex(len(cachedNodes))
+		if err != nil {
+			return nil, err
+		}
+		return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, cachedNodes[selectedIndex], nil, nil)
 	}
 
-	selectedIndex, err := cryptoRandomIndex(len(availableNodes))
-	if err != nil {
-		return nil, err
-	}
-	return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, availableNodes[selectedIndex], nil, nil)
+	return s.prepareRuntimeWithConcurrentProbes(ctx, tunnelID, layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, candidates, runtimeNodes, nil)
 }
 
 func (s *Service) prepareRuntimeWithConcurrentProbes(ctx context.Context, tunnelID string, layout singbox.RuntimeLayout, listenHost string, listenPort, controllerPort int, controllerSecret string, proxyAuth *singbox.ProxyAuth, candidates []runtimeCandidate, runtimeNodes []singbox.RuntimeNode, selectorTags []string) (*preparedRuntime, error) {
@@ -807,72 +809,6 @@ func (s *Service) prepareRuntimeWithConcurrentProbes(ctx context.Context, tunnel
 			return nil, ErrNoAvailableNodes
 		case <-ctx.Done():
 			cancel()
-			waitForProbeDrain(doneCh)
-			return nil, ctx.Err()
-		}
-	}
-}
-
-func (s *Service) probeAvailableCandidates(ctx context.Context, tunnelID string, candidates []runtimeCandidate) ([]*domain.Node, error) {
-	probeCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	successCh := make(chan *domain.Node, len(candidates))
-	errCh := make(chan error, 1)
-	doneCh := make(chan struct{})
-	var wg sync.WaitGroup
-
-	for _, candidate := range candidates {
-		wg.Add(1)
-		go func(candidate runtimeCandidate) {
-			defer wg.Done()
-			item, err := s.probeAvailableCandidate(probeCtx, tunnelID, candidate)
-			if err != nil {
-				select {
-				case errCh <- err:
-					cancel()
-				default:
-					s.logError("probe available candidate failed", "tunnel_id", tunnelID, "node_id", candidate.item.ID, "error", err)
-				}
-				return
-			}
-			if item == nil {
-				return
-			}
-			select {
-			case successCh <- item:
-			case <-probeCtx.Done():
-			}
-		}(candidate)
-	}
-
-	go func() {
-		wg.Wait()
-		close(doneCh)
-	}()
-
-	successes := make([]*domain.Node, 0, len(candidates))
-	for {
-		select {
-		case item := <-successCh:
-			if item != nil {
-				successes = append(successes, item)
-			}
-		case err := <-errCh:
-			waitForProbeDrain(doneCh)
-			return nil, err
-		case <-doneCh:
-			for {
-				select {
-				case item := <-successCh:
-					if item != nil {
-						successes = append(successes, item)
-					}
-				default:
-					return successes, nil
-				}
-			}
-		case <-ctx.Done():
 			waitForProbeDrain(doneCh)
 			return nil, ctx.Err()
 		}
@@ -958,31 +894,6 @@ func (s *Service) probeCandidate(ctx context.Context, tunnelID string, candidate
 	case successCh <- probeOutcome{item: candidate.item, result: result}:
 	default:
 	}
-}
-
-func (s *Service) probeAvailableCandidate(ctx context.Context, tunnelID string, candidate runtimeCandidate) (*domain.Node, error) {
-	result, probeErr := s.prober.Probe(ctx, candidate.target)
-	if probeErr != nil {
-		result = node.ProbeResult{
-			Success:      false,
-			TestURL:      "",
-			ErrorMessage: probeErr.Error(),
-		}
-	}
-	checkedAt := s.now().UTC()
-	if result.TestURL == "" {
-		result.TestURL = "https://cloudflare.com/cdn-cgi/trace"
-	}
-	if ctx.Err() != nil {
-		return nil, nil
-	}
-	if err := s.recordProbe(ctx, tunnelID, candidate.item, result, checkedAt); err != nil {
-		return nil, err
-	}
-	if !result.Success {
-		return nil, nil
-	}
-	return candidate.item, nil
 }
 
 func (s *Service) cachedSuccessfulProbeResult(ctx context.Context, nodeID string) (node.ProbeResult, bool, error) {
@@ -1188,7 +1099,7 @@ func (s *Service) recordProbe(ctx context.Context, tunnelID string, item *domain
 	if tunnelID != "" {
 		tunnelRef = &tunnelID
 	}
-	return s.latencySamples.Create(ctx, &domain.LatencySample{
+	if err := s.latencySamples.Create(ctx, &domain.LatencySample{
 		ID:           uuid.NewString(),
 		NodeID:       item.ID,
 		TunnelID:     tunnelRef,
@@ -1197,7 +1108,13 @@ func (s *Service) recordProbe(ctx context.Context, tunnelID string, item *domain
 		Success:      result.Success,
 		ErrorMessage: result.ErrorMessage,
 		CreatedAt:    checkedAt,
-	})
+	}); err != nil {
+		return err
+	}
+	if err := s.groups.PublishNodeUpdate(ctx, item.ID); err != nil {
+		s.logError("publish group member update failed", "tunnel_id", tunnelID, "node_id", item.ID, "error", err)
+	}
+	return nil
 }
 
 func (s *Service) markRefreshFailure(ctx context.Context, item *domain.Tunnel, err error) error {

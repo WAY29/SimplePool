@@ -31,6 +31,7 @@ import { Field, InlineFields } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuthorizedRequest } from "@/hooks/use-authorized-request";
+import { useGroupMemberStream } from "@/hooks/use-group-member-stream";
 import { usePersistedViewMode } from "@/hooks/use-persisted-view-mode";
 import { useShellMetrics } from "@/hooks/use-shell-metrics";
 import { api, type GroupMemberView, type GroupView, type ProbeBatchResult, type TunnelView } from "@/lib/api";
@@ -99,6 +100,7 @@ export function WorkspacePage() {
   const groupSubmitLabel = groupSubmitting ? "提交中..." : editingGroup ? "保存修改" : "创建分组";
   const tunnelSubmitLabel = tunnelSubmitting ? "提交中..." : editingTunnel ? "保存修改" : "创建隧道";
   const [memberViewMode, setMemberViewMode] = usePersistedViewMode("simplepool.workspace.members.view_mode", "grid");
+  const selectedGroupIDRef = useRef<string | null>(selectedGroupID);
 
   const selectedGroup = groups.find((item) => item.id === selectedGroupID) ?? null;
   const groupKeyword = deferredGroupSearch.trim().toLowerCase();
@@ -186,6 +188,10 @@ export function WorkspacePage() {
   }, [selectedGroupID]);
 
   useEffect(() => {
+    selectedGroupIDRef.current = selectedGroupID;
+  }, [selectedGroupID]);
+
+  useEffect(() => {
     const nextTunnelID = groupTunnels.find((item) => item.id === selectedTunnelID)?.id ?? groupTunnels[0]?.id ?? null;
     if (nextTunnelID !== selectedTunnelID) {
       setSelectedTunnelID(nextTunnelID);
@@ -210,6 +216,36 @@ export function WorkspacePage() {
       }),
     );
   }
+
+  const applyStreamMemberUpdate = useCallback((groupID: string, member: GroupMemberView) => {
+    if (selectedGroupIDRef.current !== groupID) {
+      return;
+    }
+    setProbeResults((current) => {
+      if (!current[member.id]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[member.id];
+      return next;
+    });
+    setMembers((current) => {
+      const index = current.findIndex((item) => item.id === member.id);
+      if (index < 0) {
+        return [...current, member];
+      }
+      const previous = current[index];
+      const next = [...current];
+      next[index] = member;
+      metrics.reconcileAvailableNode(previous, member);
+      return next;
+    });
+  }, [metrics]);
+
+  useGroupMemberStream({
+    groupIDs: selectedGroupID ? [selectedGroupID] : [],
+    onMemberUpdate: applyStreamMemberUpdate,
+  });
 
   async function probeMember(item: GroupMemberView) {
     setProbingNodeIDs((current) => ({ ...current, [item.id]: true }));

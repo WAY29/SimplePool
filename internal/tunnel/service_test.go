@@ -395,6 +395,311 @@ func TestTunnelServiceRefreshExcludesCurrentNodeAndWaitsForAlternative(t *testin
 	}
 }
 
+func TestTunnelServiceRefreshUsesCachedAlternativeWithoutWaiting(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+	currentLatency := int64(10)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-hk-fast-refresh-cache-current",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &currentLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() current error = %v", err)
+	}
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("Create() CurrentNodeID = %v, want node-hk-fast", created.CurrentNodeID)
+	}
+
+	cachedLatency := int64(18)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-jp-slow-refresh-cache-alt",
+		NodeID:    "node-jp-slow",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &cachedLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() alternative error = %v", err)
+	}
+
+	releaseUnexpectedProbe := make(chan struct{})
+	deps.prober.ResetHistory()
+	deps.prober.blocks = map[string]chan struct{}{
+		"node-jp-slow": releaseUnexpectedProbe,
+	}
+
+	type refreshResult struct {
+		view *tunnel.View
+		err  error
+	}
+	resultCh := make(chan refreshResult, 1)
+	go func() {
+		view, err := service.Refresh(ctx, created.ID)
+		resultCh <- refreshResult{view: view, err: err}
+	}()
+
+	var result refreshResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(40 * time.Millisecond):
+		t.Fatal("Refresh() did not return immediately on cached alternative")
+	}
+
+	if result.err != nil {
+		t.Fatalf("Refresh() error = %v", result.err)
+	}
+	if result.view.CurrentNodeID == nil || *result.view.CurrentNodeID != "node-jp-slow" {
+		t.Fatalf("Refresh() CurrentNodeID = %v, want cached node-jp-slow", result.view.CurrentNodeID)
+	}
+	if deps.prober.CallCount() != 0 {
+		t.Fatalf("prober calls = %d, want 0 on cache hit", deps.prober.CallCount())
+	}
+}
+
+func TestTunnelServiceRefreshUsesFirstSuccessfulProbeAndCachesBackgroundResults(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+	currentLatency := int64(10)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-hk-fast-refresh-first-current",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &currentLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() current error = %v", err)
+	}
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("Create() CurrentNodeID = %v, want node-hk-fast", created.CurrentNodeID)
+	}
+
+	hkSlow, err := deps.repos.Nodes.GetByID(ctx, "node-hk-slow")
+	if err != nil {
+		t.Fatalf("Nodes.GetByID(node-hk-slow) error = %v", err)
+	}
+	hkSlow.Enabled = true
+	hkSlow.UpdatedAt = deps.now().UTC()
+	if err := deps.repos.Nodes.Update(ctx, hkSlow); err != nil {
+		t.Fatalf("Nodes.Update(node-hk-slow) error = %v", err)
+	}
+
+	advanceTunnelClock(deps.now, 6*time.Minute)
+	firstProbeRelease := make(chan struct{})
+	backgroundRelease := make(chan struct{})
+	deps.prober.ResetHistory()
+	deps.prober.blocks = map[string]chan struct{}{
+		"node-jp-slow": firstProbeRelease,
+		"node-hk-slow": backgroundRelease,
+	}
+	deps.prober.started = make(chan string, 2)
+
+	type refreshResult struct {
+		view *tunnel.View
+		err  error
+	}
+	resultCh := make(chan refreshResult, 1)
+	go func() {
+		view, err := service.Refresh(ctx, created.ID)
+		resultCh <- refreshResult{view: view, err: err}
+	}()
+
+	waitForProbeStarts(t, deps.prober.started, "node-jp-slow", "node-hk-slow")
+	close(firstProbeRelease)
+
+	var refreshed *tunnel.View
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("Refresh() error = %v", result.err)
+		}
+		refreshed = result.view
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Refresh() did not return after first successful probe")
+	}
+
+	if refreshed.CurrentNodeID == nil || *refreshed.CurrentNodeID != "node-jp-slow" {
+		t.Fatalf("Refresh() CurrentNodeID = %v, want node-jp-slow", refreshed.CurrentNodeID)
+	}
+
+	samples, err := deps.repos.LatencySamples.ListByTunnelID(ctx, created.ID, 10)
+	if err != nil {
+		t.Fatalf("LatencySamples.ListByTunnelID() error = %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("len(samples) before background release = %d, want 1", len(samples))
+	}
+
+	close(backgroundRelease)
+	waitForTunnelSamples(t, ctx, deps.repos, created.ID, 2)
+}
+
+func TestTunnelServiceCreatePublishesGroupMemberUpdateForBackgroundProbe(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	updates, unsubscribe, err := deps.groupService.SubscribeMemberUpdates(ctx, groupID)
+	if err != nil {
+		t.Fatalf("SubscribeMemberUpdates() error = %v", err)
+	}
+	defer unsubscribe()
+
+	firstProbeRelease := make(chan struct{})
+	backgroundRelease := make(chan struct{})
+	deps.prober.blocks = map[string]chan struct{}{
+		"node-hk-fast": firstProbeRelease,
+		"node-jp-slow": backgroundRelease,
+	}
+	deps.prober.started = make(chan string, 2)
+
+	type createResult struct {
+		view *tunnel.View
+		err  error
+	}
+	resultCh := make(chan createResult, 1)
+	go func() {
+		view, err := service.Create(ctx, tunnel.CreateInput{
+			Name:    "proxy-a",
+			GroupID: groupID,
+		})
+		resultCh <- createResult{view: view, err: err}
+	}()
+
+	waitForProbeStarts(t, deps.prober.started, "node-hk-fast", "node-jp-slow")
+	close(firstProbeRelease)
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("Create() error = %v", result.err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Create() did not return after first successful probe")
+	}
+
+	close(backgroundRelease)
+	update := waitForGroupMemberUpdate(t, updates, "node-jp-slow")
+	if update.LastLatencyMS == nil || *update.LastLatencyMS != 30 {
+		t.Fatalf("background update latency = %v, want 30", update.LastLatencyMS)
+	}
+	if update.LastStatus != domain.NodeStatusHealthy {
+		t.Fatalf("background update status = %q, want healthy", update.LastStatus)
+	}
+}
+
+func TestTunnelServiceRefreshPublishesGroupMemberUpdateForBackgroundProbe(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+	currentLatency := int64(10)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-hk-fast-refresh-stream-current",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &currentLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() current error = %v", err)
+	}
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("Create() CurrentNodeID = %v, want node-hk-fast", created.CurrentNodeID)
+	}
+
+	hkSlow, err := deps.repos.Nodes.GetByID(ctx, "node-hk-slow")
+	if err != nil {
+		t.Fatalf("Nodes.GetByID(node-hk-slow) error = %v", err)
+	}
+	hkSlow.Enabled = true
+	hkSlow.UpdatedAt = deps.now().UTC()
+	if err := deps.repos.Nodes.Update(ctx, hkSlow); err != nil {
+		t.Fatalf("Nodes.Update(node-hk-slow) error = %v", err)
+	}
+
+	advanceTunnelClock(deps.now, 6*time.Minute)
+	updates, unsubscribe, err := deps.groupService.SubscribeMemberUpdates(ctx, groupID)
+	if err != nil {
+		t.Fatalf("SubscribeMemberUpdates() error = %v", err)
+	}
+	defer unsubscribe()
+	deps.prober.results["node-hk-slow"] = node.ProbeResult{
+		Success:   true,
+		LatencyMS: 20,
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+	}
+
+	firstProbeRelease := make(chan struct{})
+	backgroundRelease := make(chan struct{})
+	deps.prober.blocks = map[string]chan struct{}{
+		"node-jp-slow": firstProbeRelease,
+		"node-hk-slow": backgroundRelease,
+	}
+	deps.prober.started = make(chan string, 2)
+
+	type refreshResult struct {
+		view *tunnel.View
+		err  error
+	}
+	resultCh := make(chan refreshResult, 1)
+	go func() {
+		view, err := service.Refresh(ctx, created.ID)
+		resultCh <- refreshResult{view: view, err: err}
+	}()
+
+	waitForProbeStarts(t, deps.prober.started, "node-jp-slow", "node-hk-slow")
+	close(firstProbeRelease)
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("Refresh() error = %v", result.err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Refresh() did not return after first successful probe")
+	}
+
+	close(backgroundRelease)
+	update := waitForGroupMemberUpdate(t, updates, "node-hk-slow")
+	if update.LastLatencyMS == nil || *update.LastLatencyMS != 20 {
+		t.Fatalf("background update latency = %v, want 20", update.LastLatencyMS)
+	}
+	if update.LastStatus != domain.NodeStatusHealthy {
+		t.Fatalf("background update status = %q, want healthy", update.LastStatus)
+	}
+}
+
 func TestTunnelServiceRefreshFailsWhenOnlyCurrentNodeAvailable(t *testing.T) {
 	ctx := context.Background()
 	service, deps := newTunnelService(t)
@@ -1117,6 +1422,24 @@ func waitForTunnelSamples(t *testing.T, ctx context.Context, repos *sqlite.Repos
 		t.Fatalf("LatencySamples.ListByTunnelID() error = %v", err)
 	}
 	t.Fatalf("len(samples) = %d, want %d", len(items), want)
+}
+
+func waitForGroupMemberUpdate(t *testing.T, updates <-chan *group.MemberView, nodeID string) *group.MemberView {
+	t.Helper()
+	timeout := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case update, ok := <-updates:
+			if !ok {
+				t.Fatal("group member updates channel closed before expected update")
+			}
+			if update != nil && update.ID == nodeID {
+				return update
+			}
+		case <-timeout:
+			t.Fatalf("did not receive group member update for %s", nodeID)
+		}
+	}
 }
 
 func advanceTunnelClock(now func() time.Time, duration time.Duration) {

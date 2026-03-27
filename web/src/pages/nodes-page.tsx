@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useState } from "react";
 import {
   Check,
   Download,
@@ -34,9 +34,11 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { usePersistedViewMode } from "@/hooks/use-persisted-view-mode";
 import { useAuthorizedRequest } from "@/hooks/use-authorized-request";
+import { useGroupMemberStream } from "@/hooks/use-group-member-stream";
 import { useShellMetrics } from "@/hooks/use-shell-metrics";
 import {
   api,
+  type GroupMemberView,
   type NodeView,
   type ProbeBatchResult,
   type SubscriptionView,
@@ -81,6 +83,7 @@ export function NodesPage() {
   const metrics = useShellMetrics();
   const [items, setItems] = useState<NodeView[]>([]);
   const [subscriptions, setSubscriptions] = useState<SubscriptionView[]>([]);
+  const [groupIDs, setGroupIDs] = useState<string[]>([]);
   const [selected, setSelected] = useState<NodeView | null>(null);
   const [loading, setLoading] = useState(true);
   const [submittingNode, setSubmittingNode] = useState(false);
@@ -144,12 +147,14 @@ export function NodesPage() {
   async function load() {
     setLoading(true);
     try {
-      const [nodeItems, subscriptionItems] = await Promise.all([
+      const [nodeItems, subscriptionItems, groupItems] = await Promise.all([
         run((token) => api.nodes.list(token)),
         run((token) => api.subscriptions.list(token)),
+        run((token) => api.groups.list(token)),
       ]);
       setItems(nodeItems);
       setSubscriptions(subscriptionItems);
+      setGroupIDs(groupItems.map((item) => item.id));
       setSelected((current) => (current ? nodeItems.find((item) => item.id === current.id) ?? null : null));
       setSubscriptionFilter((current) =>
         current === ALL_SUBSCRIPTIONS || subscriptionItems.some((item) => item.id === current) ? current : ALL_SUBSCRIPTIONS,
@@ -160,6 +165,40 @@ export function NodesPage() {
       setLoading(false);
     }
   }
+
+  const applyStreamNodeUpdate = useCallback((_groupID: string, member: GroupMemberView) => {
+    setProbeResults((current) => {
+      if (!current[member.id]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[member.id];
+      return next;
+    });
+    setItems((current) => {
+      const index = current.findIndex((item) => item.id === member.id);
+      if (index < 0) {
+        return current;
+      }
+      const previous = current[index];
+      const nextItem = { ...previous, ...member };
+      const next = [...current];
+      next[index] = nextItem;
+      metrics.reconcileAvailableNode(previous, nextItem);
+      return next;
+    });
+    setSelected((current) => {
+      if (!current || current.id !== member.id) {
+        return current;
+      }
+      return { ...current, ...member };
+    });
+  }, [metrics]);
+
+  useGroupMemberStream({
+    groupIDs,
+    onMemberUpdate: applyStreamNodeUpdate,
+  });
 
   useEffect(() => {
     void load();

@@ -40,6 +40,8 @@ type FetchMockOptions = {
   probeDelays?: Record<string, number>;
   probeResults?: Record<string, Record<string, unknown>>;
   tunnelActionBehaviors?: Record<string, { delay_ms?: number; status?: number; message?: string }>;
+  groupMemberStreamEvents?: Record<string, Array<{ delay_ms: number; member: Record<string, unknown> }>>;
+  groupMemberStreamObserver?: { aborted_group_ids: string[] };
 };
 
 function defaultNodes() {
@@ -145,6 +147,8 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
   const probeResults = options.probeResults ?? {};
   const subscriptionRefreshResults = options.subscriptionRefreshResults ?? {};
   const tunnelActionBehaviors = options.tunnelActionBehaviors ?? {};
+  const groupMemberStreamEvents = options.groupMemberStreamEvents ?? {};
+  const groupMemberStreamObserver = options.groupMemberStreamObserver;
 
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -248,6 +252,43 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
     const groupMembersMatch = url.match(/\/api\/groups\/([^/]+)\/members$/);
     if (groupMembersMatch) {
       return jsonResponse(200, groupMembers[groupMembersMatch[1]] ?? []);
+    }
+    const groupMembersStreamMatch = url.match(/\/api\/groups\/([^/]+)\/members\/stream$/);
+    if (groupMembersStreamMatch) {
+      const groupID = groupMembersStreamMatch[1];
+      const encoder = new TextEncoder();
+      const events = groupMemberStreamEvents[groupID] ?? [];
+      return new Response(new ReadableStream({
+        start(controller) {
+          const timers = events.map(({ delay_ms, member }) =>
+            setTimeout(() => {
+              controller.enqueue(encoder.encode(`${JSON.stringify(member)}\n`));
+            }, delay_ms),
+          );
+          const abortSignal = init?.signal;
+          const handleAbort = () => {
+            timers.forEach((timer) => clearTimeout(timer));
+            groupMemberStreamObserver?.aborted_group_ids.push(groupID);
+            try {
+              controller.close();
+            } catch {
+              // ignore repeated abort/close in tests
+            }
+          };
+          if (abortSignal) {
+            if (abortSignal.aborted) {
+              handleAbort();
+              return;
+            }
+            abortSignal.addEventListener("abort", handleAbort, { once: true });
+          }
+        },
+      }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/x-ndjson",
+        },
+      });
     }
     if (url.endsWith("/api/tunnels") && (init?.method === undefined || init.method === "GET")) {
       return jsonResponse(200, tunnels);
@@ -1279,6 +1320,41 @@ describe("App", () => {
     ).toBe(true);
   });
 
+  it("节点池页可实时接收组成员推送并更新节点延迟", async () => {
+    window.history.pushState({}, "", "/nodes");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    installAuthenticatedFetchMock({
+      groupMemberStreamEvents: {
+        "group-1": [
+          {
+            delay_ms: 30,
+            member: {
+              id: "node-1",
+              name: "香港-A1",
+              source_kind: "manual",
+              protocol: "trojan",
+              server: "192.168.1.101",
+              server_port: 443,
+              enabled: true,
+              last_latency_ms: 84,
+              last_status: "healthy",
+              last_checked_at: "2026-03-26T10:08:00Z",
+              created_at: "2026-03-26T10:00:00Z",
+              updated_at: "2026-03-26T10:08:00Z",
+            },
+          },
+        ],
+      },
+    });
+
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("84 ms")).toBeInTheDocument();
+    });
+  });
+
   it("动态隧道创建时自动带入当前分组并在卡片内显示节点与操作按钮", async () => {
     window.history.pushState({}, "", "/");
     window.localStorage.setItem("simplepool.session_token", "token-1");
@@ -1478,5 +1554,160 @@ describe("App", () => {
     expect(recoveredCard.className).not.toContain("opacity-60");
     expect(within(recoveredCard).getByRole("button", { name: "刷新 代理-A" }).querySelector("svg")?.getAttribute("class") ?? "").not.toContain("animate-spin");
     expect(countFetchCalls(fetchMock, /\/api\/tunnels\/tunnel-1\/refresh$/, "POST")).toBe(1);
+  });
+
+  it("组节点页可实时接收动态隧道后台探测推送并更新节点延迟", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    installAuthenticatedFetchMock({
+      groupMemberStreamEvents: {
+        "group-1": [
+          {
+            delay_ms: 30,
+            member: {
+              id: "node-1",
+              name: "香港-A1",
+              source_kind: "manual",
+              protocol: "trojan",
+              server: "192.168.1.101",
+              server_port: 443,
+              enabled: true,
+              last_latency_ms: 84,
+              last_status: "healthy",
+              last_checked_at: "2026-03-26T10:08:00Z",
+              created_at: "2026-03-26T10:00:00Z",
+              updated_at: "2026-03-26T10:08:00Z",
+            },
+          },
+        ],
+      },
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    const tunnelCard = await screen.findByRole("group", { name: "隧道 代理-A" });
+
+    await user.click(within(tunnelCard).getByRole("button", { name: "刷新 代理-A" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("84 ms")).toBeInTheDocument();
+    });
+  });
+
+  it("切换分组时关闭旧的组节点推送流", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const observer = { aborted_group_ids: [] as string[] };
+    installAuthenticatedFetchMock({
+      groups: [
+        {
+          id: "group-1",
+          name: "测试分组",
+          filter_regex: "HK",
+          description: "香港节点",
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
+        {
+          id: "group-2",
+          name: "日本组",
+          filter_regex: "JP",
+          description: "日本节点",
+          created_at: "2026-03-26T10:01:00Z",
+          updated_at: "2026-03-26T10:01:00Z",
+        },
+      ],
+      groupMembers: {
+        "group-1": [
+          {
+            id: "node-1",
+            name: "香港-A1",
+            source_kind: "manual",
+            protocol: "trojan",
+            server: "192.168.1.101",
+            server_port: 443,
+            enabled: true,
+            last_latency_ms: 42,
+            last_status: "healthy",
+            last_checked_at: "2026-03-26T10:04:00Z",
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+        ],
+        "group-2": [
+          {
+            id: "node-2",
+            name: "日本-B2",
+            source_kind: "manual",
+            protocol: "trojan",
+            server: "192.168.1.102",
+            server_port: 443,
+            enabled: true,
+            last_latency_ms: 51,
+            last_status: "healthy",
+            last_checked_at: "2026-03-26T10:04:00Z",
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+        ],
+      },
+      tunnels: [],
+      groupMemberStreamEvents: {
+        "group-1": [
+          {
+            delay_ms: 80,
+            member: {
+              id: "node-1",
+              name: "香港-A1",
+              source_kind: "manual",
+              protocol: "trojan",
+              server: "192.168.1.101",
+              server_port: 443,
+              enabled: true,
+              last_latency_ms: 84,
+              last_status: "healthy",
+              last_checked_at: "2026-03-26T10:08:00Z",
+              created_at: "2026-03-26T10:00:00Z",
+              updated_at: "2026-03-26T10:08:00Z",
+            },
+          },
+        ],
+        "group-2": [
+          {
+            delay_ms: 20,
+            member: {
+              id: "node-2",
+              name: "日本-B2",
+              source_kind: "manual",
+              protocol: "trojan",
+              server: "192.168.1.102",
+              server_port: 443,
+              enabled: true,
+              last_latency_ms: 63,
+              last_status: "healthy",
+              last_checked_at: "2026-03-26T10:08:00Z",
+              created_at: "2026-03-26T10:00:00Z",
+              updated_at: "2026-03-26T10:08:00Z",
+            },
+          },
+        ],
+      },
+      groupMemberStreamObserver: observer,
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    await screen.findByRole("heading", { name: "节点组" });
+    await user.click(screen.getByRole("button", { name: /日本组/ }));
+
+    await waitFor(() => {
+      expect(observer.aborted_group_ids).toContain("group-1");
+    });
+    await waitFor(() => {
+      expect(screen.getByText("63 ms")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("84 ms")).not.toBeInTheDocument();
   });
 });
