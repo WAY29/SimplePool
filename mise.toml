@@ -1,6 +1,6 @@
 [tools]
 go = "1.25.6"
-node = "22.12.0"
+node = "22.13.0"
 
 [tasks.dev]
 description = "启动"

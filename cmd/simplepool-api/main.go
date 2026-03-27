@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -36,6 +37,11 @@ func run(parent context.Context, args []string) error {
 
 	opts, err := parseArgs(args)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			_, _ = fmt.Fprint(os.Stdout, usageText())
+			return nil
+		}
+
 		return fmt.Errorf("parse args failed: %w", err)
 	}
 
@@ -83,7 +89,7 @@ func loadConfig(opts options) (config.Config, error) {
 func parseArgs(args []string) (options, error) {
 	var opts options
 
-	flags := flag.NewFlagSet("simplepool-api", flag.ContinueOnError)
+	flags := flag.NewFlagSet("simplepool", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.ConfigPath, "config", ".env", "path to env config file")
 	flags.BoolVar(&opts.Debug, "debug", false, "enable gin debug mode")
@@ -97,6 +103,16 @@ func parseArgs(args []string) (options, error) {
 	}
 
 	return opts, nil
+}
+
+func usageText() string {
+	var builder strings.Builder
+	flags := flag.NewFlagSet("simplepool", flag.ContinueOnError)
+	flags.SetOutput(&builder)
+	flags.String("config", ".env", "path to env config file")
+	flags.Bool("debug", false, "enable gin debug mode")
+	flags.PrintDefaults()
+	return "Usage of simplepool:\n" + builder.String()
 }
 
 func setGinMode(debug bool) {

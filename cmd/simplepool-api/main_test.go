@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
+	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -33,6 +36,22 @@ func TestParseArgsAcceptsDebugFlag(t *testing.T) {
 
 	if !opts.Debug {
 		t.Fatal("Debug = false, want true")
+	}
+}
+
+func TestParseArgsHelpReturnsFlagErrHelp(t *testing.T) {
+	_, err := parseArgs([]string{"-h"})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseArgs() error = %v, want flag.ErrHelp", err)
+	}
+}
+
+func TestUsageTextIncludesSupportedFlags(t *testing.T) {
+	text := usageText()
+	for _, want := range []string{"Usage of simplepool-api:", "-config", "-debug"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("usageText() missing %q in %q", want, text)
+		}
 	}
 }
 
