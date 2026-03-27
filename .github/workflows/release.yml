@@ -220,11 +220,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
             printf 'Release %s 已存在，拒绝覆盖\n' "$TAG_NAME" >&2
             exit 1
           fi
@@ -237,6 +238,7 @@ jobs:
           fi
 
           gh release create "$TAG_NAME" "${assets[@]}" \
+          --repo "$GH_REPO" \
             --title "$TAG_NAME" \
             --generate-notes \
             --verify-tag
