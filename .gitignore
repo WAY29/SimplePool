@@ -7,4 +7,9 @@ internal/httpapi/webui/dist/
 *.db-wal
 coverage.out
 .env
+
 *.md
+!README.md
+!README.zh-CN.md
+
+simplepool

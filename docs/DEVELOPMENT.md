@@ -29,9 +29,9 @@
 后端入口支持通过 `--config` 显式指定一份 ENV 风格配置文件；文件内容仍然使用现有的 `SIMPLEPOOL_*` 键。Gin 默认以 `release` 模式启动，只有显式追加 `-debug` 才会启用 `debug` 模式。
 
 - 示例文件：`.env.example`
-- 直接运行：`go run ./cmd/simplepool-api --config .env.example`
-- 调试运行：`go run ./cmd/simplepool-api --config .env.example -debug`
-- 或使用任务：`mise run api -- --config .env.example`
+- 直接运行：`go run -tags 'with_quic with_dhcp with_wireguard with_clash_api' ./cmd/simplepool-api --config .env.example`
+- 调试运行：`go run -tags 'with_quic with_dhcp with_wireguard with_clash_api' ./cmd/simplepool-api --config .env.example -debug`
+- 若只想按默认配置快速启动：`mise run dev` 或 `mise run dev --debug`
 
 ## 前端嵌入
 
@@ -43,11 +43,16 @@
 
 统一通过 `mise` 执行：
 
-- `mise run api`：启动后端
-- `mise run web`：启动前端开发服务器
+- `mise run dev`：先构建嵌入式前端，再启动后端
 - `mise run fmt`：格式化 Go 代码
 - `mise run test`：运行 Go 单元测试
+- `mise run web:build`：构建前端并写入 `internal/httpapi/webui/dist`
+- `mise run web:typecheck`：执行前端类型检查
 - `mise run check`：执行格式检查、静态检查、单元测试；若未安装前端依赖则跳过前端类型检查
+
+前端开发服务器当前未封装到 `mise` 任务中，直接使用：
+
+- `npm --prefix web run dev`
 
 补充：
 

@@ -1,0 +1,242 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  SIMPLEPOOL_BUILD_TAGS: with_quic with_dhcp with_wireguard with_clash_api
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-web:
+    name: 构建前端
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 解析 Node 版本
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_version="$(sed -n 's/^node = "\(.*\)"/\1/p' mise.toml | head -n 1)"
+          if [ -z "$node_version" ]; then
+            printf '%s\n' '无法从 mise.toml 解析 Node 版本' >&2
+            exit 1
+          fi
+          printf 'node=%s\n' "$node_version" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 安装前端依赖
+        run: npm --prefix web ci
+
+      - name: 构建前端
+        run: npm --prefix web run build
+
+      - name: 上传前端产物
+        uses: actions/upload-artifact@v6
+        with:
+          name: web-dist
+          path: internal/httpapi/webui/dist/**/*
+          if-no-files-found: error
+
+  build-package:
+    name: 构建并打包 ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: build-web
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary_name: simplepool
+            archive_type: tar.gz
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            binary_name: simplepool
+            archive_type: tar.gz
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            binary_name: simplepool
+            archive_type: tar.gz
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            binary_name: simplepool.exe
+            archive_type: zip
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v6
+
+      - name: 解析 Go 版本
+        id: versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          go_version="$(sed -n 's/^go = "\(.*\)"/\1/p' mise.toml | head -n 1)"
+          if [ -z "$go_version" ]; then
+            printf '%s\n' '无法从 mise.toml 解析 Go 版本' >&2
+            exit 1
+          fi
+          printf 'go=%s\n' "$go_version" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.versions.outputs.go }}
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v5
+        with:
+          name: web-dist
+          path: internal/httpapi/webui/dist
+
+      - name: 校验前端嵌入产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f internal/httpapi/webui/dist/index.html
+
+      - name: 构建后端
+        id: build
+        shell: bash
+        env:
+          GOOS_TARGET: ${{ matrix.goos }}
+          GOARCH_TARGET: ${{ matrix.goarch }}
+          BINARY_NAME: ${{ matrix.binary_name }}
+          BUILD_TAGS: ${{ env.SIMPLEPOOL_BUILD_TAGS }}
+        run: |
+          set -euo pipefail
+          build_dir="release-build/${GOOS_TARGET}_${GOARCH_TARGET}"
+          mkdir -p "$build_dir"
+          binary_path="$build_dir/${BINARY_NAME}"
+
+          GOOS="$GOOS_TARGET" GOARCH="$GOARCH_TARGET" \
+            go build -ldflags='-s -w' -tags "$BUILD_TAGS" -o "$binary_path" ./cmd/simplepool-api
+
+          printf 'binary_path=%s\n' "$binary_path" >> "$GITHUB_OUTPUT"
+
+      - name: 打包 Unix 产物
+        id: package_unix
+        if: matrix.archive_type == 'tar.gz'
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GOOS_TARGET: ${{ matrix.goos }}
+          GOARCH_TARGET: ${{ matrix.goarch }}
+          BINARY_NAME: ${{ matrix.binary_name }}
+          BINARY_PATH: ${{ steps.build.outputs.binary_path }}
+        run: |
+          set -euo pipefail
+          package_stem="simplepool_${TAG_NAME}_${GOOS_TARGET}_${GOARCH_TARGET}"
+          package_dir="release-packages/${package_stem}"
+          archive_path="release-packages/${package_stem}.tar.gz"
+
+          mkdir -p "$package_dir"
+          cp "$BINARY_PATH" "$package_dir/${BINARY_NAME}"
+          cp .env.example "$package_dir/.env.example"
+
+          tar -C release-packages -czf "$archive_path" "$package_stem"
+          tar -tzf "$archive_path"
+
+          printf 'archive_path=%s\n' "$archive_path" >> "$GITHUB_OUTPUT"
+
+      - name: 打包 Windows 产物
+        id: package_windows
+        if: matrix.archive_type == 'zip'
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GOOS_TARGET: ${{ matrix.goos }}
+          GOARCH_TARGET: ${{ matrix.goarch }}
+          BINARY_NAME: ${{ matrix.binary_name }}
+          BINARY_PATH: ${{ steps.build.outputs.binary_path }}
+        run: |
+          $packageStem = "simplepool_${env:TAG_NAME}_${env:GOOS_TARGET}_${env:GOARCH_TARGET}"
+          $packageDir = Join-Path "release-packages" $packageStem
+          $archivePath = Join-Path "release-packages" "$packageStem.zip"
+
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          Copy-Item $env:BINARY_PATH (Join-Path $packageDir $env:BINARY_NAME) -Force
+          Copy-Item ".env.example" (Join-Path $packageDir ".env.example") -Force
+
+          if (Test-Path $archivePath) {
+            Remove-Item $archivePath -Force
+          }
+
+          Compress-Archive -Path $packageDir -DestinationPath $archivePath
+          $verifyDir = Join-Path $env:RUNNER_TEMP $packageStem
+          if (Test-Path $verifyDir) {
+            Remove-Item $verifyDir -Recurse -Force
+          }
+          Expand-Archive -Path $archivePath -DestinationPath $verifyDir -Force
+          Get-ChildItem -Path $verifyDir -Recurse -File | ForEach-Object { Write-Output $_.FullName }
+
+          "archive_path=$archivePath" >> $env:GITHUB_OUTPUT
+
+      - name: 上传发布压缩包
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ matrix.archive_type == 'zip' && steps.package_windows.outputs.archive_path || steps.package_unix.outputs.archive_path }}
+          if-no-files-found: error
+
+  release:
+    name: 发布 GitHub Release
+    needs: build-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 下载全部发布压缩包
+        uses: actions/download-artifact@v5
+        with:
+          path: release-artifacts
+
+      - name: 创建 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            printf 'Release %s 已存在，拒绝覆盖\n' "$TAG_NAME" >&2
+            exit 1
+          fi
+
+          mapfile -t assets < <(find release-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          if [ "${#assets[@]}" -ne 4 ]; then
+            printf '发布资产数量错误: got=%s want=4\n' "${#assets[@]}" >&2
+            printf '%s\n' "${assets[@]}" >&2
+            exit 1
+          fi
+
+          gh release create "$TAG_NAME" "${assets[@]}" \
+            --title "$TAG_NAME" \
+            --generate-notes \
+            --verify-tag

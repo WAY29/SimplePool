@@ -19,7 +19,7 @@ exec go run -tags 'with_quic with_dhcp with_wireguard with_clash_api' "$@"
 
 [tasks.build]
 description = "构建"
-run = "go build -ldflags='-s-w' -tags 'with_quic with_dhcp with_wireguard with_clash_api' ./cmd/simplepool-api -o simplepool"
+run = "go build -ldflags='-s -w' -tags 'with_quic with_dhcp with_wireguard with_clash_api'  -o simplepool ./cmd/simplepool-api"
 
 [tasks.openapi]
 description = "生成 OpenAPI JSON"

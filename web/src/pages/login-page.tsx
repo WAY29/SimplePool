@@ -56,17 +56,8 @@ export function LoginPage() {
                 <h1 className="font-display text-4xl font-semibold leading-tight text-white sm:text-5xl">
                   登录 SimplePool
                 </h1>
-                <p className="max-w-xl text-base leading-7 text-[var(--muted-foreground)]">
-                  节点池、动态分组、HTTP 隧道与刷新事件在一个控制面板内完成闭环操作。
-                </p>
               </div>
             </div>
-
-            <InlineFields className="grid-cols-1 gap-4 md:grid-cols-3">
-              <MiniStat title="单机控制面" value="V1" />
-              <MiniStat title="隧道语义" value="手动刷新锁定" />
-              <MiniStat title="运行方式" value="独立 runtime" />
-            </InlineFields>
           </div>
         </Card>
 
