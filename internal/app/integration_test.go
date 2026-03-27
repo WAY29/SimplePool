@@ -159,6 +159,59 @@ func TestAppTunnelUsesConfiguredLogLevelForSingBox(t *testing.T) {
 	}
 }
 
+func TestAppRestartRestoresRunningTunnelWithStoredNode(t *testing.T) {
+	root := t.TempDir()
+	firstRuntime := newIntegrationRuntime()
+	first := newIntegrationAppAtRoot(t, root, firstRuntime, "debug")
+
+	token := loginIntegrationApp(t, first)
+	groupID := createGroupWithNodesForTunnel(t, first, token)
+
+	resp := integrationRequest(t, first, http.MethodPost, "/api/tunnels", token, map[string]any{
+		"name":     "proxy-a",
+		"group_id": groupID,
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /api/tunnels status = %d, want 201", resp.StatusCode)
+	}
+	var created map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode tunnel response error = %v", err)
+	}
+	tunnelID := created["id"].(string)
+	currentNodeID := created["current_node_id"].(string)
+
+	shutdownIntegrationApp(t, first)
+
+	secondRuntime := newIntegrationRuntime()
+	second := newIntegrationAppAtRoot(t, root, secondRuntime, "debug")
+	defer shutdownIntegrationApp(t, second)
+
+	state := secondRuntime.states[tunnelID]
+	if state == nil {
+		t.Fatal("runtime state missing after restart")
+	}
+	if state.now != "node-"+currentNodeID {
+		t.Fatalf("runtime selector now = %q, want %q", state.now, "node-"+currentNodeID)
+	}
+
+	token = loginIntegrationApp(t, second)
+	resp = integrationRequest(t, second, http.MethodGet, "/api/tunnels/"+tunnelID, token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/tunnels/:id status = %d, want 200", resp.StatusCode)
+	}
+	var restored map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&restored); err != nil {
+		t.Fatalf("decode tunnel get response error = %v", err)
+	}
+	if restored["status"] != "running" {
+		t.Fatalf("status = %v, want running after restart", restored["status"])
+	}
+	if restored["current_node_id"] != currentNodeID {
+		t.Fatalf("current_node_id = %v, want %s", restored["current_node_id"], currentNodeID)
+	}
+}
+
 func newIntegrationApp(t *testing.T) *app.App {
 	t.Helper()
 
@@ -168,7 +221,12 @@ func newIntegrationApp(t *testing.T) *app.App {
 func newIntegrationAppWithRuntime(t *testing.T, runtime *integrationRuntime, logLevel string) *app.App {
 	t.Helper()
 
-	root := t.TempDir()
+	return newIntegrationAppAtRoot(t, t.TempDir(), runtime, logLevel)
+}
+
+func newIntegrationAppAtRoot(t *testing.T, root string, runtime *integrationRuntime, logLevel string) *app.App {
+	t.Helper()
+
 	cfg := config.Config{
 		HTTPAddr: "127.0.0.1:0",
 		LogLevel: logLevel,

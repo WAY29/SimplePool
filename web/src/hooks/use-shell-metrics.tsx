@@ -5,12 +5,13 @@ import {
   useEffect,
   useState,
 } from "react";
-import type { GroupMemberView, NodeView } from "@/lib/api";
+import type { GroupMemberView, NodeView, TunnelView } from "@/lib/api";
 import { api } from "@/lib/api";
 import { countAvailableNodes, countRunningTunnels, isAvailableNode } from "@/lib/format";
 import { useSession } from "@/hooks/use-session";
 
 type AvailableNodeLike = Pick<NodeView, "enabled" | "last_status"> | Pick<GroupMemberView, "enabled" | "last_status">;
+type ActiveTunnelLike = Pick<TunnelView, "status">;
 
 type ShellMetrics = {
   readyStatus: string;
@@ -19,9 +20,10 @@ type ShellMetrics = {
   availableNodeCount: number;
   refresh: () => Promise<void>;
   reconcileAvailableNode: (previous: AvailableNodeLike, next: AvailableNodeLike) => void;
+  reconcileActiveTunnel: (previous: ActiveTunnelLike, next: ActiveTunnelLike) => void;
 };
 
-type ShellMetricsSnapshot = Omit<ShellMetrics, "refresh" | "reconcileAvailableNode">;
+type ShellMetricsSnapshot = Omit<ShellMetrics, "refresh" | "reconcileAvailableNode" | "reconcileActiveTunnel">;
 
 const ShellMetricsContext = createContext<ShellMetrics | null>(null);
 
@@ -80,6 +82,20 @@ export function ShellMetricsProvider({ children }: { children: ReactNode }) {
     });
   }
 
+  function reconcileActiveTunnel(previous: ActiveTunnelLike, next: ActiveTunnelLike) {
+    setMetrics((current) => {
+      const previousRunning = previous.status === "running";
+      const nextRunning = next.status === "running";
+      if (previousRunning === nextRunning) {
+        return current;
+      }
+      return {
+        ...current,
+        activeTunnelCount: Math.max(0, current.activeTunnelCount + (nextRunning ? 1 : -1)),
+      };
+    });
+  }
+
   useEffect(() => {
     if (session.status === "authenticated") {
       void refresh();
@@ -99,6 +115,7 @@ export function ShellMetricsProvider({ children }: { children: ReactNode }) {
         ...metrics,
         refresh,
         reconcileAvailableNode,
+        reconcileActiveTunnel,
       }}
     >
       {children}

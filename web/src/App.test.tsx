@@ -39,6 +39,7 @@ type FetchMockOptions = {
   tunnels?: Array<Record<string, unknown>>;
   probeDelays?: Record<string, number>;
   probeResults?: Record<string, Record<string, unknown>>;
+  tunnelActionBehaviors?: Record<string, { delay_ms?: number; status?: number; message?: string }>;
 };
 
 function defaultNodes() {
@@ -143,6 +144,7 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
   const probeDelays = options.probeDelays ?? {};
   const probeResults = options.probeResults ?? {};
   const subscriptionRefreshResults = options.subscriptionRefreshResults ?? {};
+  const tunnelActionBehaviors = options.tunnelActionBehaviors ?? {};
 
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -285,6 +287,16 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
     if (tunnelActionMatch && init?.method === "POST") {
       const tunnelID = tunnelActionMatch[1];
       const action = tunnelActionMatch[2];
+      const actionBehavior = tunnelActionBehaviors[`${tunnelID}:${action}`];
+      if ((actionBehavior?.delay_ms ?? 0) > 0) {
+        await new Promise((resolve) => setTimeout(resolve, actionBehavior?.delay_ms));
+      }
+      if ((actionBehavior?.status ?? 200) >= 400) {
+        return jsonResponse(actionBehavior?.status ?? 500, {
+          code: "request_failed",
+          message: actionBehavior?.message ?? "隧道操作失败",
+        });
+      }
       const now =
         action === "refresh"
           ? "2026-03-26T10:08:00Z"
@@ -421,6 +433,10 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
 
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function countFetchCalls(fetchMock: ReturnType<typeof installAuthenticatedFetchMock>, matcher: RegExp, method = "GET") {
+  return fetchMock.mock.calls.filter(([input, init]) => matcher.test(String(input)) && (init?.method ?? "GET") === method).length;
 }
 
 describe("App", () => {
@@ -1266,6 +1282,7 @@ describe("App", () => {
   it("动态隧道创建时自动带入当前分组并在卡片内显示节点与操作按钮", async () => {
     window.history.pushState({}, "", "/");
     window.localStorage.setItem("simplepool.session_token", "token-1");
+    vi.spyOn(Date, "now").mockReturnValue(new Date("2026-03-26T10:53:00Z").getTime());
     const fetchMock = installAuthenticatedFetchMock({
       tunnels: [],
       groupMembers: {
@@ -1311,10 +1328,155 @@ describe("App", () => {
     });
 
     const tunnelCard = await screen.findByRole("group", { name: "隧道 代理-B" });
-    expect(within(tunnelCard).getByText("当前节点 香港-A1")).toBeInTheDocument();
+    expect(within(tunnelCard).getByText("46m 前")).toBeInTheDocument();
+    expect(within(tunnelCard).getByLabelText("认证未启用")).toBeInTheDocument();
+    expect(within(tunnelCard).getByText("香港-A1")).toBeInTheDocument();
+    expect(within(tunnelCard).getByText("监听地址")).toBeInTheDocument();
+    expect(within(tunnelCard).getByText("0.0.0.0:18080")).toBeInTheDocument();
+    expect(within(tunnelCard).queryByText(/当前节点/)).not.toBeInTheDocument();
     expect(within(tunnelCard).getByRole("button", { name: "刷新 代理-B" })).toBeInTheDocument();
     expect(within(tunnelCard).getByRole("button", { name: "停止 代理-B" })).toBeInTheDocument();
     expect(within(tunnelCard).getByRole("button", { name: "编辑 代理-B" })).toBeInTheDocument();
     expect(within(tunnelCard).getByRole("button", { name: "删除 代理-B" })).toBeInTheDocument();
+  });
+
+  it("动态隧道卡片显示认证图标与紧凑刷新时间，并在停止后灰化", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    vi.spyOn(Date, "now").mockReturnValue(new Date("2026-03-26T10:53:00Z").getTime());
+    installAuthenticatedFetchMock();
+
+    renderApp();
+
+    const user = userEvent.setup();
+    const tunnelCard = await screen.findByRole("group", { name: "隧道 代理-A" });
+    expect(within(tunnelCard).getByLabelText("认证已启用")).toBeInTheDocument();
+    expect(within(tunnelCard).getByText("48m 前")).toBeInTheDocument();
+    expect(within(tunnelCard).getByText("香港-A1")).toBeInTheDocument();
+    expect(within(tunnelCard).getByText("127.0.0.1:18080")).toBeInTheDocument();
+    expect(within(tunnelCard).getByRole("button", { name: "停止 代理-A" }).className).toContain("bg-rose-500/12");
+
+    await user.click(within(tunnelCard).getByRole("button", { name: "停止 代理-A" }));
+
+    await waitFor(() => {
+      expect(within(screen.getByRole("group", { name: "隧道 代理-A" })).getByRole("button", { name: "启动 代理-A" })).toBeInTheDocument();
+    });
+
+    const stoppedTunnelCard = screen.getByRole("group", { name: "隧道 代理-A" });
+    expect(stoppedTunnelCard.className).toContain("grayscale");
+    expect(within(stoppedTunnelCard).getByRole("button", { name: "启动 代理-A" }).className).toContain("bg-emerald-500/12");
+  });
+
+  it("动态隧道启动停止只更新卡片且不重新拉取整个工作区", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock();
+
+    renderApp();
+
+    const user = userEvent.setup();
+    const tunnelCard = await screen.findByRole("group", { name: "隧道 代理-A" });
+
+    const groupsBefore = countFetchCalls(fetchMock, /\/api\/groups$/);
+    const tunnelsBefore = countFetchCalls(fetchMock, /\/api\/tunnels$/);
+    const nodesBefore = countFetchCalls(fetchMock, /\/api\/nodes$/);
+    const membersBefore = countFetchCalls(fetchMock, /\/api\/groups\/group-1\/members$/);
+
+    await user.click(within(tunnelCard).getByRole("button", { name: "停止 代理-A" }));
+
+    await waitFor(() => {
+      expect(within(screen.getByRole("group", { name: "隧道 代理-A" })).getByRole("button", { name: "启动 代理-A" })).toBeInTheDocument();
+    });
+
+    expect(countFetchCalls(fetchMock, /\/api\/tunnels\/tunnel-1\/stop$/, "POST")).toBe(1);
+    expect(countFetchCalls(fetchMock, /\/api\/groups$/)).toBe(groupsBefore);
+    expect(countFetchCalls(fetchMock, /\/api\/tunnels$/)).toBe(tunnelsBefore);
+    expect(countFetchCalls(fetchMock, /\/api\/nodes$/)).toBe(nodesBefore);
+    expect(countFetchCalls(fetchMock, /\/api\/groups\/group-1\/members$/)).toBe(membersBefore);
+
+    await user.click(within(screen.getByRole("group", { name: "隧道 代理-A" })).getByRole("button", { name: "启动 代理-A" }));
+
+    await waitFor(() => {
+      expect(within(screen.getByRole("group", { name: "隧道 代理-A" })).getByRole("button", { name: "停止 代理-A" })).toBeInTheDocument();
+    });
+
+    expect(countFetchCalls(fetchMock, /\/api\/tunnels\/tunnel-1\/start$/, "POST")).toBe(1);
+    expect(countFetchCalls(fetchMock, /\/api\/groups$/)).toBe(groupsBefore);
+    expect(countFetchCalls(fetchMock, /\/api\/tunnels$/)).toBe(tunnelsBefore);
+    expect(countFetchCalls(fetchMock, /\/api\/nodes$/)).toBe(nodesBefore);
+    expect(countFetchCalls(fetchMock, /\/api\/groups\/group-1\/members$/)).toBe(membersBefore);
+    expect(within(screen.getByRole("group", { name: "隧道 代理-A" })).getByText("香港-A1")).toBeInTheDocument();
+  });
+
+  it("动态隧道刷新时显示淡化转圈并阻止重复点击，完成后恢复", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      tunnelActionBehaviors: {
+        "tunnel-1:refresh": { delay_ms: 80 },
+      },
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    const tunnelCard = await screen.findByRole("group", { name: "隧道 代理-A" });
+    const refreshButton = within(tunnelCard).getByRole("button", { name: "刷新 代理-A" });
+
+    await user.click(refreshButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole("group", { name: "隧道 代理-A" })).toHaveAttribute("aria-busy", "true");
+    });
+
+    const busyCard = screen.getByRole("group", { name: "隧道 代理-A" });
+    const busyRefreshButton = within(busyCard).getByRole("button", { name: "刷新 代理-A" });
+    expect(busyRefreshButton).toBeDisabled();
+    expect(busyCard.className).toContain("opacity-60");
+    expect(busyRefreshButton.querySelector("svg")?.getAttribute("class") ?? "").toContain("animate-spin");
+
+    await user.click(busyRefreshButton);
+    expect(countFetchCalls(fetchMock, /\/api\/tunnels\/tunnel-1\/refresh$/, "POST")).toBe(1);
+
+    await waitFor(() => {
+      expect(screen.getByRole("group", { name: "隧道 代理-A" })).toHaveAttribute("aria-busy", "false");
+    });
+
+    const recoveredCard = screen.getByRole("group", { name: "隧道 代理-A" });
+    const recoveredRefreshButton = within(recoveredCard).getByRole("button", { name: "刷新 代理-A" });
+    expect(recoveredRefreshButton).not.toBeDisabled();
+    expect(recoveredCard.className).not.toContain("opacity-60");
+    expect(recoveredRefreshButton.querySelector("svg")?.getAttribute("class") ?? "").not.toContain("animate-spin");
+  });
+
+  it("动态隧道刷新失败后恢复动画状态", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      tunnelActionBehaviors: {
+        "tunnel-1:refresh": { delay_ms: 50, status: 409, message: "没有可切换的新节点" },
+      },
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    const tunnelCard = await screen.findByRole("group", { name: "隧道 代理-A" });
+
+    await user.click(within(tunnelCard).getByRole("button", { name: "刷新 代理-A" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("group", { name: "隧道 代理-A" })).toHaveAttribute("aria-busy", "true");
+    });
+
+    await waitFor(() => {
+      expect(within(screen.getByRole("group", { name: "隧道 代理-A" })).getByRole("button", { name: "刷新 代理-A" })).not.toBeDisabled();
+    });
+
+    const recoveredCard = screen.getByRole("group", { name: "隧道 代理-A" });
+    expect(recoveredCard).toHaveAttribute("aria-busy", "false");
+    expect(recoveredCard.className).not.toContain("opacity-60");
+    expect(within(recoveredCard).getByRole("button", { name: "刷新 代理-A" }).querySelector("svg")?.getAttribute("class") ?? "").not.toContain("animate-spin");
+    expect(countFetchCalls(fetchMock, /\/api\/tunnels\/tunnel-1\/refresh$/, "POST")).toBe(1);
   });
 });

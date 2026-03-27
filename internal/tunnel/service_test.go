@@ -38,8 +38,8 @@ func TestTunnelServiceCreateStopStartAndDelete(t *testing.T) {
 	if created.Status != domain.TunnelStatusRunning {
 		t.Fatalf("Status = %q, want running", created.Status)
 	}
-	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-hk-fast" {
-		t.Fatalf("CurrentNodeID = %v, want node-hk-fast", created.CurrentNodeID)
+	if created.CurrentNodeID == nil || *created.CurrentNodeID == "" {
+		t.Fatalf("CurrentNodeID = %v, want selected node", created.CurrentNodeID)
 	}
 	if !created.HasAuth {
 		t.Fatal("HasAuth = false, want true")
@@ -59,8 +59,8 @@ func TestTunnelServiceCreateStopStartAndDelete(t *testing.T) {
 	if runtimeState == nil || !runtimeState.running {
 		t.Fatal("runtime not running after create")
 	}
-	if runtimeState.now != "node-node-hk-fast" {
-		t.Fatalf("runtime selector now = %q, want node-node-hk-fast", runtimeState.now)
+	if runtimeState.now != "node-"+*created.CurrentNodeID {
+		t.Fatalf("runtime selector now = %q, want node-%s", runtimeState.now, *created.CurrentNodeID)
 	}
 	if !slices.Equal(runtimeState.all, []string{"node-node-hk-fast", "node-node-jp-slow"}) {
 		t.Fatalf("runtime all = %v, want enabled group snapshot", runtimeState.all)
@@ -118,6 +118,101 @@ func TestTunnelServiceCreateStopStartAndDelete(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("len(events) = %d, want 0 after hard delete cascade", len(events))
+	}
+}
+
+func TestTunnelServiceStartReusesStoredRuntimeConfigWithoutReprobe(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID == "" {
+		t.Fatalf("Create() CurrentNodeID = %v, want selected node", created.CurrentNodeID)
+	}
+	if _, err := service.Stop(ctx, created.ID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	beforeProbeCalls := deps.prober.CallCount()
+	deps.prober.err = errors.New("probe should not be called on start")
+
+	started, err := service.Start(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if started.Status != domain.TunnelStatusRunning {
+		t.Fatalf("Start() status = %q, want running", started.Status)
+	}
+	if started.CurrentNodeID == nil || *started.CurrentNodeID != *created.CurrentNodeID {
+		t.Fatalf("Start() CurrentNodeID = %v, want %s", started.CurrentNodeID, *created.CurrentNodeID)
+	}
+	if deps.prober.CallCount() != beforeProbeCalls {
+		t.Fatalf("prober calls = %d, want %d without reprobe", deps.prober.CallCount(), beforeProbeCalls)
+	}
+	state := deps.runtime.state(created.ID)
+	if state == nil || !state.running {
+		t.Fatalf("runtime state = %+v, want running", state)
+	}
+	if state.now != "node-"+*created.CurrentNodeID {
+		t.Fatalf("runtime selector now = %q, want node-%s", state.now, *created.CurrentNodeID)
+	}
+	if !slices.Equal(state.all, []string{"node-node-hk-fast", "node-node-jp-slow"}) {
+		t.Fatalf("runtime all = %v, want stored selector pool", state.all)
+	}
+}
+
+func TestTunnelServiceInitializeRestoresRunningTunnelWithoutReprobe(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID == "" {
+		t.Fatalf("Create() CurrentNodeID = %v, want selected node", created.CurrentNodeID)
+	}
+
+	deps.runtime.states = make(map[string]*fakeRuntimeState)
+	beforeProbeCalls := deps.prober.CallCount()
+	deps.prober.err = errors.New("probe should not be called on initialize")
+
+	if err := service.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	got, err := service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != domain.TunnelStatusRunning {
+		t.Fatalf("Status = %q, want running after initialize restore", got.Status)
+	}
+	if got.CurrentNodeID == nil || *got.CurrentNodeID != *created.CurrentNodeID {
+		t.Fatalf("CurrentNodeID = %v, want %s", got.CurrentNodeID, *created.CurrentNodeID)
+	}
+	if deps.prober.CallCount() != beforeProbeCalls {
+		t.Fatalf("prober calls = %d, want %d without reprobe", deps.prober.CallCount(), beforeProbeCalls)
+	}
+	state := deps.runtime.state(created.ID)
+	if state == nil || !state.running {
+		t.Fatalf("runtime state = %+v, want restored running state", state)
+	}
+	if state.now != "node-"+*created.CurrentNodeID {
+		t.Fatalf("runtime selector now = %q, want node-%s", state.now, *created.CurrentNodeID)
 	}
 }
 
@@ -182,6 +277,9 @@ func TestTunnelServiceRefreshFailureKeepsOldRuntimeAndMarksDegraded(t *testing.T
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID == "" {
+		t.Fatalf("Create() CurrentNodeID = %v, want selected node", created.CurrentNodeID)
+	}
 	advanceTunnelClock(deps.now, 6*time.Minute)
 
 	deps.prober.results["node-hk-fast"] = node.ProbeResult{
@@ -209,8 +307,8 @@ func TestTunnelServiceRefreshFailureKeepsOldRuntimeAndMarksDegraded(t *testing.T
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if got.CurrentNodeID == nil || *got.CurrentNodeID != "node-hk-fast" {
-		t.Fatalf("CurrentNodeID = %v, want old node-hk-fast", got.CurrentNodeID)
+	if got.CurrentNodeID == nil || *got.CurrentNodeID != *created.CurrentNodeID {
+		t.Fatalf("CurrentNodeID = %v, want keep %s", got.CurrentNodeID, *created.CurrentNodeID)
 	}
 	if got.Status != domain.TunnelStatusDegraded {
 		t.Fatalf("Status = %q, want degraded", got.Status)
@@ -218,8 +316,8 @@ func TestTunnelServiceRefreshFailureKeepsOldRuntimeAndMarksDegraded(t *testing.T
 	if got.LastRefreshError == "" {
 		t.Fatal("LastRefreshError empty, want recorded error")
 	}
-	if state := deps.runtime.state(created.ID); state == nil || !state.running || state.now != "node-node-hk-fast" {
-		t.Fatalf("runtime state = %+v, want old runtime kept", state)
+	if state := deps.runtime.state(created.ID); state == nil || !state.running || state.now != "node-"+*created.CurrentNodeID {
+		t.Fatalf("runtime state = %+v, want kept runtime on node-%s", state, *created.CurrentNodeID)
 	}
 
 	events, err := service.ListEvents(ctx, created.ID, 10)
@@ -228,6 +326,112 @@ func TestTunnelServiceRefreshFailureKeepsOldRuntimeAndMarksDegraded(t *testing.T
 	}
 	if len(events) == 0 || events[0].EventType != "tunnel.refresh_failed" {
 		t.Fatalf("events = %+v, want newest refresh_failed", events)
+	}
+}
+
+func TestTunnelServiceRefreshExcludesCurrentNodeAndWaitsForAlternative(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+	latency := int64(10)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-hk-fast-refresh-current",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &latency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() error = %v", err)
+	}
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("Create() CurrentNodeID = %v, want node-hk-fast", created.CurrentNodeID)
+	}
+
+	advanceTunnelClock(deps.now, 6*time.Minute)
+	releaseAlternative := make(chan struct{})
+	deps.prober.ResetHistory()
+	deps.prober.blocks = map[string]chan struct{}{
+		"node-jp-slow": releaseAlternative,
+	}
+
+	type refreshResult struct {
+		view *tunnel.View
+		err  error
+	}
+	resultCh := make(chan refreshResult, 1)
+	go func() {
+		view, err := service.Refresh(ctx, created.ID)
+		resultCh <- refreshResult{view: view, err: err}
+	}()
+
+	select {
+	case result := <-resultCh:
+		t.Fatalf("Refresh() returned before alternative probe released: %+v, err = %v", result.view, result.err)
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	close(releaseAlternative)
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatalf("Refresh() error = %v", result.err)
+	}
+	if result.view.CurrentNodeID == nil || *result.view.CurrentNodeID != "node-jp-slow" {
+		t.Fatalf("Refresh() CurrentNodeID = %v, want node-jp-slow", result.view.CurrentNodeID)
+	}
+
+	callIDs := deps.prober.CallIDs()
+	if !slices.Equal(callIDs, []string{"node-jp-slow"}) {
+		t.Fatalf("prober call ids = %v, want only alternative node-jp-slow", callIDs)
+	}
+}
+
+func TestTunnelServiceRefreshFailsWhenOnlyCurrentNodeAvailable(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "美国", "^US-")
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID != "node-us-mid" {
+		t.Fatalf("Create() CurrentNodeID = %v, want node-us-mid", created.CurrentNodeID)
+	}
+
+	advanceTunnelClock(deps.now, 6*time.Minute)
+	deps.prober.ResetHistory()
+
+	_, err = service.Refresh(ctx, created.ID)
+	if !errors.Is(err, tunnel.ErrNoAvailableNodes) {
+		t.Fatalf("Refresh() error = %v, want ErrNoAvailableNodes", err)
+	}
+
+	got, err := service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.CurrentNodeID == nil || *got.CurrentNodeID != "node-us-mid" {
+		t.Fatalf("CurrentNodeID = %v, want keep node-us-mid", got.CurrentNodeID)
+	}
+	if got.Status != domain.TunnelStatusDegraded {
+		t.Fatalf("Status = %q, want degraded", got.Status)
+	}
+	if deps.prober.CallCount() != 0 {
+		t.Fatalf("prober calls = %d, want 0 when no alternative nodes exist", deps.prober.CallCount())
 	}
 }
 
@@ -283,6 +487,9 @@ func TestTunnelServiceRebuildFailureFallsBackToStoredRuntimeConfig(t *testing.T)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	if created.CurrentNodeID == nil || *created.CurrentNodeID == "" {
+		t.Fatalf("Create() CurrentNodeID = %v, want selected node", created.CurrentNodeID)
+	}
 
 	storedBefore, err := deps.repos.Tunnels.GetByID(ctx, created.ID)
 	if err != nil {
@@ -314,8 +521,8 @@ func TestTunnelServiceRebuildFailureFallsBackToStoredRuntimeConfig(t *testing.T)
 	if got.Status != domain.TunnelStatusDegraded {
 		t.Fatalf("Status = %q, want degraded", got.Status)
 	}
-	if got.CurrentNodeID == nil || *got.CurrentNodeID != "node-hk-fast" {
-		t.Fatalf("CurrentNodeID = %v, want old node-hk-fast", got.CurrentNodeID)
+	if got.CurrentNodeID == nil || *got.CurrentNodeID != *created.CurrentNodeID {
+		t.Fatalf("CurrentNodeID = %v, want keep %s", got.CurrentNodeID, *created.CurrentNodeID)
 	}
 
 	state := deps.runtime.state(created.ID)
@@ -407,6 +614,9 @@ func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *
 	if got, want := secondUpdated.RuntimeDir, filepath.Join(deps.runtimeRoot, "亚洲-proxy-c"); got != want {
 		t.Fatalf("RuntimeDir = %q, want %q", got, want)
 	}
+	if secondUpdated.CurrentNodeID == nil || *secondUpdated.CurrentNodeID == "" {
+		t.Fatalf("Update() second CurrentNodeID = %v, want selected node", secondUpdated.CurrentNodeID)
+	}
 	if _, err := os.Stat(secondOldRuntimeDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("second old runtime dir still exists, err = %v", err)
 	}
@@ -422,27 +632,19 @@ func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *
 		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
 		LatencyMS: 20,
 	}
-	hkFastRelease := make(chan struct{})
-	jpSlowRelease := make(chan struct{})
-	deps.prober.blocks = map[string]chan struct{}{
-		"node-hk-fast": hkFastRelease,
-		"node-jp-slow": jpSlowRelease,
-	}
 
 	refreshed, err := service.Refresh(ctx, created.ID)
-	close(hkFastRelease)
-	close(jpSlowRelease)
 	if err != nil {
 		t.Fatalf("Refresh() error = %v", err)
 	}
-	if refreshed.CurrentNodeID == nil || *refreshed.CurrentNodeID != "node-hk-slow" {
-		t.Fatalf("Refresh() CurrentNodeID = %v, want node-hk-slow", refreshed.CurrentNodeID)
+	if refreshed.CurrentNodeID == nil || *refreshed.CurrentNodeID == *secondUpdated.CurrentNodeID {
+		t.Fatalf("Refresh() CurrentNodeID = %v, want alternative to %s", refreshed.CurrentNodeID, *secondUpdated.CurrentNodeID)
 	}
 	if deps.runtime.switchCalls == 0 {
 		t.Fatal("switchCalls = 0, want selector switch")
 	}
-	if state := deps.runtime.state(created.ID); state == nil || state.now != "node-node-hk-slow" {
-		t.Fatalf("runtime selector now = %+v, want switched to node-node-hk-slow", state)
+	if state := deps.runtime.state(created.ID); state == nil || state.now == "node-"+*secondUpdated.CurrentNodeID {
+		t.Fatalf("runtime selector now = %+v, want switched away from node-%s", state, *secondUpdated.CurrentNodeID)
 	}
 	if state := deps.runtime.state(created.ID); state == nil || !slices.Equal(state.all, []string{"node-node-hk-fast", "node-node-jp-slow", "node-node-hk-slow"}) {
 		t.Fatalf("runtime all = %+v, want all asia trojan nodes", state)
@@ -815,6 +1017,7 @@ func seedTunnelNodes(t *testing.T, ctx context.Context, repos *sqlite.Repositori
 type fakeTunnelProber struct {
 	mu      sync.Mutex
 	calls   int
+	callIDs []string
 	results map[string]node.ProbeResult
 	err     error
 	started chan string
@@ -824,6 +1027,7 @@ type fakeTunnelProber struct {
 func (f *fakeTunnelProber) Probe(ctx context.Context, target node.ProbeTarget) (node.ProbeResult, error) {
 	f.mu.Lock()
 	f.calls++
+	f.callIDs = append(f.callIDs, target.ID)
 	started := f.started
 	block := f.blocks[target.ID]
 	results := f.results
@@ -863,6 +1067,19 @@ func (f *fakeTunnelProber) CallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeTunnelProber) CallIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.callIDs...)
+}
+
+func (f *fakeTunnelProber) ResetHistory() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = 0
+	f.callIDs = nil
 }
 
 func waitForProbeStarts(t *testing.T, started <-chan string, wants ...string) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"os"
 	"path/filepath"
 	"slices"
@@ -220,16 +221,12 @@ func (s *Service) Initialize(ctx context.Context) error {
 		return err
 	}
 	for _, item := range items {
-		if item.Status == domain.TunnelStatusStopped {
+		if item.Status != domain.TunnelStatusRunning {
 			continue
 		}
-		item.Status = domain.TunnelStatusStopped
-		item.LastRefreshError = "runtime state reset on startup"
-		item.UpdatedAt = s.now().UTC()
-		if err := s.tunnels.Update(ctx, item); err != nil {
+		if err := s.restoreRunningTunnel(ctx, item); err != nil {
 			return err
 		}
-		s.logInfo("tunnel runtime reconciled", "tunnel_id", item.ID)
 	}
 	return nil
 }
@@ -371,6 +368,10 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*Vi
 		current.AuthPasswordCiphertext = authCiphertext
 		current.AuthNonce = authNonce
 		current.RuntimeDir = layout.RootDir
+		current.RuntimeConfigJSON, err = updateStoredRuntimeConfig(current.RuntimeConfigJSON, current.ListenHost, current.ListenPort, proxyAuth)
+		if err != nil {
+			return nil, err
+		}
 		current.UpdatedAt = s.now().UTC()
 		if err := s.tunnels.Update(ctx, current); err != nil {
 			return nil, err
@@ -408,42 +409,27 @@ func (s *Service) Start(ctx context.Context, id string) (*View, error) {
 	if current.Status != domain.TunnelStatusStopped {
 		return toView(current), nil
 	}
-
-	controllerSecret, err := s.decryptControllerSecret(current)
+	layout, err := s.startStoredRuntime(ctx, current)
 	if err != nil {
-		return nil, err
-	}
-	proxyAuth, err := s.decryptAuth(current)
-	if err != nil {
-		return nil, err
-	}
-
-	layout, err := s.runtimeLayoutFor(ctx, current.GroupID, current.Name)
-	if err != nil {
-		return nil, err
-	}
-	prepared, err := s.prepareRuntime(ctx, current.ID, current.GroupID, layout, current.ListenHost, current.ListenPort, current.ControllerPort, controllerSecret, proxyAuth)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.runtime.Start(ctx, current.ID, layout, prepared.config); err != nil {
-		prepared.stopBackground()
+		current.LastRefreshError = err.Error()
+		current.UpdatedAt = s.now().UTC()
+		if updateErr := s.tunnels.Update(ctx, current); updateErr != nil {
+			return nil, updateErr
+		}
 		return nil, err
 	}
 
 	current.Status = domain.TunnelStatusRunning
-	current.CurrentNodeID = stringPtr(prepared.currentNode.ID)
 	current.RuntimeDir = layout.RootDir
-	current.RuntimeConfigJSON = string(prepared.config)
 	current.LastRefreshError = ""
 	current.UpdatedAt = s.now().UTC()
 	if err := s.tunnels.Update(ctx, current); err != nil {
-		prepared.stopBackground()
 		_ = s.runtime.Stop(ctx, current.ID)
 		return nil, err
 	}
 	s.recordEvent(ctx, current.ID, "tunnel.started", map[string]any{
 		"current_node_id": current.CurrentNodeID,
+		"mode":            "stored_runtime",
 	})
 	s.logInfo("tunnel started", "tunnel_id", current.ID)
 	return toView(current), nil
@@ -492,7 +478,7 @@ func (s *Service) Refresh(ctx context.Context, id string) (*View, error) {
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := s.prepareRuntime(ctx, current.ID, current.GroupID, layout, current.ListenHost, current.ListenPort, current.ControllerPort, controllerSecret, proxyAuth)
+	prepared, err := s.prepareRefreshRuntime(ctx, current.ID, current, layout, current.ListenHost, current.ListenPort, current.ControllerPort, controllerSecret, proxyAuth)
 	if err != nil {
 		return nil, s.markRefreshFailure(ctx, current, err)
 	}
@@ -740,6 +726,54 @@ func (s *Service) prepareRuntime(ctx context.Context, tunnelID, groupID string, 
 	return s.prepareRuntimeWithConcurrentProbes(ctx, tunnelID, layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, candidates, runtimeNodes, selectorTags)
 }
 
+func (s *Service) prepareRefreshRuntime(ctx context.Context, tunnelID string, current *domain.Tunnel, layout singbox.RuntimeLayout, listenHost string, listenPort, controllerPort int, controllerSecret string, proxyAuth *singbox.ProxyAuth) (*preparedRuntime, error) {
+	nodes, err := s.loadGroupSnapshot(ctx, current.GroupID)
+	if err != nil {
+		return nil, err
+	}
+
+	currentNodeID := ""
+	if current.CurrentNodeID != nil {
+		currentNodeID = strings.TrimSpace(*current.CurrentNodeID)
+	}
+
+	candidates := make([]runtimeCandidate, 0, len(nodes))
+	runtimeNodes := make([]singbox.RuntimeNode, 0, len(nodes))
+	for _, item := range nodes {
+		target, runtimeNode, err := s.buildRuntimeNode(item)
+		if err != nil {
+			return nil, err
+		}
+		runtimeNodes = append(runtimeNodes, runtimeNode)
+		if item.ID == currentNodeID {
+			continue
+		}
+		candidates = append(candidates, runtimeCandidate{
+			item:        item,
+			target:      target,
+			runtimeNode: runtimeNode,
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, ErrNoAvailableNodes
+	}
+
+	availableNodes, err := s.probeAvailableCandidates(ctx, tunnelID, candidates)
+	if err != nil {
+		return nil, err
+	}
+	if len(availableNodes) == 0 {
+		return nil, ErrNoAvailableNodes
+	}
+
+	selectedIndex, err := cryptoRandomIndex(len(availableNodes))
+	if err != nil {
+		return nil, err
+	}
+	return s.renderPreparedRuntime(layout, listenHost, listenPort, controllerPort, controllerSecret, proxyAuth, runtimeNodes, availableNodes[selectedIndex], nil, nil)
+}
+
 func (s *Service) prepareRuntimeWithConcurrentProbes(ctx context.Context, tunnelID string, layout singbox.RuntimeLayout, listenHost string, listenPort, controllerPort int, controllerSecret string, proxyAuth *singbox.ProxyAuth, candidates []runtimeCandidate, runtimeNodes []singbox.RuntimeNode, selectorTags []string) (*preparedRuntime, error) {
 	probeCtx, cancel := context.WithCancel(context.Background())
 	successCh := make(chan probeOutcome, 1)
@@ -773,6 +807,72 @@ func (s *Service) prepareRuntimeWithConcurrentProbes(ctx context.Context, tunnel
 			return nil, ErrNoAvailableNodes
 		case <-ctx.Done():
 			cancel()
+			waitForProbeDrain(doneCh)
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (s *Service) probeAvailableCandidates(ctx context.Context, tunnelID string, candidates []runtimeCandidate) ([]*domain.Node, error) {
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	successCh := make(chan *domain.Node, len(candidates))
+	errCh := make(chan error, 1)
+	doneCh := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for _, candidate := range candidates {
+		wg.Add(1)
+		go func(candidate runtimeCandidate) {
+			defer wg.Done()
+			item, err := s.probeAvailableCandidate(probeCtx, tunnelID, candidate)
+			if err != nil {
+				select {
+				case errCh <- err:
+					cancel()
+				default:
+					s.logError("probe available candidate failed", "tunnel_id", tunnelID, "node_id", candidate.item.ID, "error", err)
+				}
+				return
+			}
+			if item == nil {
+				return
+			}
+			select {
+			case successCh <- item:
+			case <-probeCtx.Done():
+			}
+		}(candidate)
+	}
+
+	go func() {
+		wg.Wait()
+		close(doneCh)
+	}()
+
+	successes := make([]*domain.Node, 0, len(candidates))
+	for {
+		select {
+		case item := <-successCh:
+			if item != nil {
+				successes = append(successes, item)
+			}
+		case err := <-errCh:
+			waitForProbeDrain(doneCh)
+			return nil, err
+		case <-doneCh:
+			for {
+				select {
+				case item := <-successCh:
+					if item != nil {
+						successes = append(successes, item)
+					}
+				default:
+					return successes, nil
+				}
+			}
+		case <-ctx.Done():
 			waitForProbeDrain(doneCh)
 			return nil, ctx.Err()
 		}
@@ -860,6 +960,31 @@ func (s *Service) probeCandidate(ctx context.Context, tunnelID string, candidate
 	}
 }
 
+func (s *Service) probeAvailableCandidate(ctx context.Context, tunnelID string, candidate runtimeCandidate) (*domain.Node, error) {
+	result, probeErr := s.prober.Probe(ctx, candidate.target)
+	if probeErr != nil {
+		result = node.ProbeResult{
+			Success:      false,
+			TestURL:      "",
+			ErrorMessage: probeErr.Error(),
+		}
+	}
+	checkedAt := s.now().UTC()
+	if result.TestURL == "" {
+		result.TestURL = "https://cloudflare.com/cdn-cgi/trace"
+	}
+	if ctx.Err() != nil {
+		return nil, nil
+	}
+	if err := s.recordProbe(ctx, tunnelID, candidate.item, result, checkedAt); err != nil {
+		return nil, err
+	}
+	if !result.Success {
+		return nil, nil
+	}
+	return candidate.item, nil
+}
+
 func (s *Service) cachedSuccessfulProbeResult(ctx context.Context, nodeID string) (node.ProbeResult, bool, error) {
 	samples, err := s.latencySamples.ListByNodeID(ctx, nodeID, 1)
 	if err != nil {
@@ -883,6 +1008,57 @@ func (s *Service) cachedSuccessfulProbeResult(ctx context.Context, nodeID string
 		result.LatencyMS = *latest.LatencyMS
 	}
 	return result, true, nil
+}
+
+func (s *Service) restoreRunningTunnel(ctx context.Context, item *domain.Tunnel) error {
+	layout, err := s.startStoredRuntime(ctx, item)
+	if err != nil {
+		return s.markRestoreFailure(ctx, item, err)
+	}
+	if item.RuntimeDir != layout.RootDir || item.LastRefreshError != "" {
+		item.RuntimeDir = layout.RootDir
+		item.LastRefreshError = ""
+		item.UpdatedAt = s.now().UTC()
+		if err := s.tunnels.Update(ctx, item); err != nil {
+			return err
+		}
+	}
+	s.logInfo("tunnel runtime restored", "tunnel_id", item.ID)
+	return nil
+}
+
+func (s *Service) startStoredRuntime(ctx context.Context, item *domain.Tunnel) (singbox.RuntimeLayout, error) {
+	layout, err := s.runtimeLayoutForTunnel(ctx, item)
+	if err != nil {
+		return singbox.RuntimeLayout{}, err
+	}
+	config, err := loadStoredRuntimeConfig(item)
+	if err != nil {
+		return singbox.RuntimeLayout{}, err
+	}
+	if err := s.runtime.Start(ctx, item.ID, layout, config); err != nil {
+		return singbox.RuntimeLayout{}, err
+	}
+	return layout, nil
+}
+
+func (s *Service) runtimeLayoutForTunnel(ctx context.Context, item *domain.Tunnel) (singbox.RuntimeLayout, error) {
+	if item != nil && strings.TrimSpace(item.RuntimeDir) != "" {
+		return runtimeLayoutFromRoot(item.RuntimeDir), nil
+	}
+	return s.runtimeLayoutFor(ctx, item.GroupID, item.Name)
+}
+
+func (s *Service) markRestoreFailure(ctx context.Context, item *domain.Tunnel, err error) error {
+	item.Status = domain.TunnelStatusStopped
+	item.LastRefreshError = err.Error()
+	item.UpdatedAt = s.now().UTC()
+	if updateErr := s.tunnels.Update(ctx, item); updateErr != nil {
+		return updateErr
+	}
+	s.recordEvent(ctx, item.ID, "tunnel.restore_failed", map[string]any{"error": err.Error()})
+	s.logError("tunnel restore failed", "tunnel_id", item.ID, "error", err)
+	return nil
 }
 
 func (s *Service) loadGroupSnapshot(ctx context.Context, groupID string) ([]*domain.Node, error) {
@@ -912,6 +1088,55 @@ func loadStoredRuntimeConfig(item *domain.Tunnel) ([]byte, error) {
 		return nil, ErrRuntimeConfigNil
 	}
 	return []byte(item.RuntimeConfigJSON), nil
+}
+
+func updateStoredRuntimeConfig(rawConfig, listenHost string, listenPort int, auth *singbox.ProxyAuth) (string, error) {
+	if rawConfig == "" {
+		return "", nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(rawConfig), &payload); err != nil {
+		return "", err
+	}
+	inbounds, ok := payload["inbounds"].([]any)
+	if !ok || len(inbounds) == 0 {
+		return "", ErrRuntimeConfigNil
+	}
+	inbound, ok := inbounds[0].(map[string]any)
+	if !ok {
+		return "", ErrRuntimeConfigNil
+	}
+	if strings.TrimSpace(listenHost) == "" {
+		listenHost = "127.0.0.1"
+	}
+	inbound["listen"] = listenHost
+	inbound["listen_port"] = listenPort
+	if auth != nil && (auth.Username != "" || auth.Password != "") {
+		inbound["users"] = []map[string]any{{
+			"username": auth.Username,
+			"password": auth.Password,
+		}}
+	} else {
+		delete(inbound, "users")
+	}
+	inbounds[0] = inbound
+	payload["inbounds"] = inbounds
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(updated), nil
+}
+
+func cryptoRandomIndex(limit int) (int, error) {
+	if limit <= 1 {
+		return 0, nil
+	}
+	value, err := rand.Int(rand.Reader, big.NewInt(int64(limit)))
+	if err != nil {
+		return 0, err
+	}
+	return int(value.Int64()), nil
 }
 
 func (s *Service) buildRuntimeNode(item *domain.Node) (node.ProbeTarget, singbox.RuntimeNode, error) {

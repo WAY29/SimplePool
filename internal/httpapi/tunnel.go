@@ -128,6 +128,8 @@ func handleTunnelError(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"code": "no_available_nodes", "message": err.Error()})
 	case errors.Is(err, tunnel.ErrTunnelConflict):
 		c.JSON(http.StatusConflict, gin.H{"code": "duplicate_tunnel", "message": err.Error()})
+	case errors.Is(err, tunnel.ErrRuntimeConfigNil):
+		c.JSON(http.StatusConflict, gin.H{"code": "runtime_config_missing", "message": err.Error()})
 	case errors.Is(err, tunnel.ErrTunnelNotRunning):
 		c.JSON(http.StatusConflict, gin.H{"code": "tunnel_not_running", "message": err.Error()})
 	default:

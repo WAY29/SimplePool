@@ -51,6 +51,32 @@ export function formatRelativeTime(value?: string | null) {
   return relativeFormatter.format(Math.round(diffSeconds / 86400), "day");
 }
 
+export function formatCompactRelativeTime(value?: string | null) {
+  if (!value) {
+    return "未记录";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "未记录";
+  }
+
+  const diffSeconds = Math.round((Date.now() - date.getTime()) / 1000);
+  const abs = Math.abs(diffSeconds);
+  const suffix = diffSeconds >= 0 ? "前" : "后";
+
+  if (abs < 60) {
+    return `${abs}s ${suffix}`;
+  }
+  if (abs < 3600) {
+    return `${Math.round(abs / 60)}m ${suffix}`;
+  }
+  if (abs < 86400) {
+    return `${Math.round(abs / 3600)}h ${suffix}`;
+  }
+  return `${Math.round(abs / 86400)}d ${suffix}`;
+}
+
 export function formatLatency(latency?: number | null) {
   if (latency === undefined || latency === null) {
     return "未探测";

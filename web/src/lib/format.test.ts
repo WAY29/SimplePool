@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { countAvailableNodes, formatRegionFlag, inferRegion } from "@/lib/format";
+import { describe, expect, it, vi } from "vitest";
+import { countAvailableNodes, formatCompactRelativeTime, formatRegionFlag, inferRegion } from "@/lib/format";
 
 describe("countAvailableNodes", () => {
   it("将已启用且非不可达节点计入 available", () => {
@@ -26,6 +26,16 @@ describe("formatRegionFlag", () => {
   it("为未知地区返回通用图标", () => {
     expect(formatRegionFlag("—")).toBe("🌐");
     expect(formatRegionFlag("AUTO")).toBe("🌐");
+  });
+});
+
+describe("formatCompactRelativeTime", () => {
+  it("按紧凑格式输出相对时间", () => {
+    vi.spyOn(Date, "now").mockReturnValue(new Date("2026-03-26T10:53:00Z").getTime());
+
+    expect(formatCompactRelativeTime("2026-03-26T10:07:00Z")).toBe("46m 前");
+    expect(formatCompactRelativeTime("2026-03-26T10:52:40Z")).toBe("20s 前");
+    expect(formatCompactRelativeTime(null)).toBe("未记录");
   });
 });
 

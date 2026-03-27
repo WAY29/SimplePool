@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Boxes,
   Check,
@@ -6,6 +6,8 @@ import {
   Play,
   Plus,
   RefreshCw,
+  ShieldCheck,
+  ShieldOff,
   Square,
   SquarePen,
   Trash2,
@@ -34,7 +36,9 @@ import { useShellMetrics } from "@/hooks/use-shell-metrics";
 import { api, type GroupMemberView, type GroupView, type ProbeBatchResult, type TunnelView } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
+  formatCompactRelativeTime,
   formatDateTime,
+  formatRegionFlag,
   formatTunnelStatus,
   inferRegion,
   tunnelStatusTone,
@@ -60,6 +64,8 @@ const defaultTunnelForm: TunnelFormValues = {
   username: "",
   password: "",
 };
+
+type TunnelActionName = "refresh" | "start" | "stop";
 
 export function WorkspacePage() {
   const { run } = useAuthorizedRequest();
@@ -88,6 +94,8 @@ export function WorkspacePage() {
   const [probeResults, setProbeResults] = useState<Record<string, ProbeBatchResult>>({});
   const [probingNodeIDs, setProbingNodeIDs] = useState<Record<string, boolean>>({});
   const [togglingNodeIDs, setTogglingNodeIDs] = useState<Record<string, boolean>>({});
+  const [refreshingTunnelIDs, setRefreshingTunnelIDs] = useState<Record<string, boolean>>({});
+  const refreshingTunnelIDsRef = useRef<Set<string>>(new Set());
   const groupSubmitLabel = groupSubmitting ? "提交中..." : editingGroup ? "保存修改" : "创建分组";
   const tunnelSubmitLabel = tunnelSubmitting ? "提交中..." : editingTunnel ? "保存修改" : "创建隧道";
   const [memberViewMode, setMemberViewMode] = usePersistedViewMode("simplepool.workspace.members.view_mode", "grid");
@@ -338,7 +346,7 @@ export function WorkspacePage() {
     setShowTunnelForm(true);
   }
 
-  function openEditTunnel(item: TunnelView) {
+  const openEditTunnel = useCallback((item: TunnelView) => {
     setEditingTunnel(item);
     setTunnelForm({
       name: item.name,
@@ -349,7 +357,31 @@ export function WorkspacePage() {
     });
     setTunnelErrors({});
     setShowTunnelForm(true);
-  }
+  }, []);
+
+  const beginTunnelRefresh = useCallback((tunnelID: string) => {
+    if (refreshingTunnelIDsRef.current.has(tunnelID)) {
+      return false;
+    }
+    refreshingTunnelIDsRef.current.add(tunnelID);
+    setRefreshingTunnelIDs((current) => ({ ...current, [tunnelID]: true }));
+    return true;
+  }, []);
+
+  const endTunnelRefresh = useCallback((tunnelID: string) => {
+    if (!refreshingTunnelIDsRef.current.has(tunnelID)) {
+      return;
+    }
+    refreshingTunnelIDsRef.current.delete(tunnelID);
+    setRefreshingTunnelIDs((current) => {
+      if (!current[tunnelID]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[tunnelID];
+      return next;
+    });
+  }, []);
 
   async function submitTunnel() {
     const nextErrors = validateTunnelForm(tunnelForm);
@@ -401,9 +433,13 @@ export function WorkspacePage() {
     }
   }
 
-  async function runTunnelAction(actionName: "refresh" | "start" | "stop", item: TunnelView) {
+  const runTunnelAction = useCallback(async (actionName: TunnelActionName, item: TunnelView) => {
+    const isRefresh = actionName === "refresh";
+    if (isRefresh && !beginTunnelRefresh(item.id)) {
+      return;
+    }
     try {
-      await run((token) => {
+      const updated = await run((token) => {
         switch (actionName) {
           case "refresh":
             return api.tunnels.refresh(token, item.id);
@@ -413,6 +449,11 @@ export function WorkspacePage() {
             return api.tunnels.stop(token, item.id);
         }
       });
+      setTunnels((current) => current.map((currentItem) => (currentItem.id === updated.id ? updated : currentItem)));
+      setSelectedTunnelID(updated.id);
+      if (actionName === "start" || actionName === "stop") {
+        metrics.reconcileActiveTunnel(item, updated);
+      }
       toast.success(
         actionName === "refresh"
           ? "隧道已刷新"
@@ -420,33 +461,58 @@ export function WorkspacePage() {
             ? "隧道已启动"
             : "隧道已停止",
       );
-      await loadWorkspace(item.group_id);
-      await metrics.refresh();
-      setSelectedTunnelID(item.id);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "隧道操作失败");
+    } finally {
+      if (isRefresh) {
+        endTunnelRefresh(item.id);
+      }
     }
-  }
+  }, [beginTunnelRefresh, endTunnelRefresh, metrics, run]);
 
-  async function removeTunnel(item: TunnelView) {
+  const removeTunnel = useCallback(async (item: TunnelView) => {
     if (!window.confirm(`确认删除隧道 ${item.name}？运行时目录也会一起清理`)) {
       return;
     }
     try {
       await run((token) => api.tunnels.remove(token, item.id));
+      setTunnels((current) => current.filter((currentItem) => currentItem.id !== item.id));
+      if (item.status === "running") {
+        metrics.reconcileActiveTunnel(item, { status: "stopped" });
+      }
       toast.success("隧道已删除");
-      await loadWorkspace(item.group_id);
-      await metrics.refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除隧道失败");
     }
-  }
+  }, [metrics, run]);
+
+  const handleSelectTunnel = useCallback((tunnelID: string) => {
+    setSelectedTunnelID(tunnelID);
+  }, []);
+
+  const handleTunnelAction = useCallback((actionName: TunnelActionName, item: TunnelView) => {
+    void runTunnelAction(actionName, item);
+  }, [runTunnelAction]);
+
+  const handleEditTunnel = useCallback((item: TunnelView) => {
+    setSelectedTunnelID(item.id);
+    openEditTunnel(item);
+  }, [openEditTunnel]);
+
+  const handleDeleteTunnel = useCallback((item: TunnelView) => {
+    setSelectedTunnelID(item.id);
+    void removeTunnel(item);
+  }, [removeTunnel]);
 
   function currentTunnelNodeLabel(item: TunnelView) {
     if (!item.current_node_id) {
       return "未锁定";
     }
     return memberNameByID[item.current_node_id] ?? item.current_node_id;
+  }
+
+  function currentTunnelNodeRegion(item: TunnelView) {
+    return inferRegion(currentTunnelNodeLabel(item));
   }
 
   return (
@@ -537,89 +603,18 @@ export function WorkspacePage() {
               ) : (
                 <div className="grid gap-3">
                   {filteredTunnels.map((item) => (
-                    <div
-                      aria-label={`隧道 ${item.name}`}
-                      className={cn(
-                        "overflow-hidden rounded-[18px] border transition-colors",
-                        selectedTunnel?.id === item.id
-                          ? "border-violet-400/40 bg-violet-500/12"
-                          : "border-white/10 bg-white/4 hover:border-white/20 hover:bg-white/7",
-                      )}
+                    <TunnelCard
+                      currentNodeLabel={currentTunnelNodeLabel(item)}
+                      currentNodeRegion={currentTunnelNodeRegion(item)}
+                      isRefreshing={Boolean(refreshingTunnelIDs[item.id])}
+                      isSelected={selectedTunnel?.id === item.id}
                       key={item.id}
-                      role="group"
-                    >
-                      <button
-                        className="grid w-full gap-3 px-4 py-4 text-left"
-                        onClick={() => setSelectedTunnelID(item.id)}
-                        type="button"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-medium text-white">{item.name}</p>
-                            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                              {item.listen_host}:{item.listen_port}
-                            </p>
-                          </div>
-                          <Badge tone={tunnelStatusTone(item.status)}>{formatTunnelStatus(item.status)}</Badge>
-                        </div>
-                        <div className="grid gap-1 text-xs text-[var(--muted-foreground)]">
-                          <span>{item.has_auth ? "已启用认证" : "未启用认证"}</span>
-                          <span>当前节点 {currentTunnelNodeLabel(item)}</span>
-                          <span>最近刷新 {formatDateTime(item.last_refresh_at)}</span>
-                        </div>
-                      </button>
-                      <div className="flex items-center justify-end gap-2 border-t border-white/8 px-4 py-3">
-                        <SmallActionButton
-                          label={`刷新 ${item.name}`}
-                          onClick={() => {
-                            setSelectedTunnelID(item.id);
-                            void runTunnelAction("refresh", item);
-                          }}
-                        >
-                          <RefreshCw className="h-3.5 w-3.5" />
-                        </SmallActionButton>
-                        {item.status === "stopped" ? (
-                          <SmallActionButton
-                            label={`启动 ${item.name}`}
-                            onClick={() => {
-                              setSelectedTunnelID(item.id);
-                              void runTunnelAction("start", item);
-                            }}
-                          >
-                            <Play className="h-3.5 w-3.5" />
-                          </SmallActionButton>
-                        ) : (
-                          <SmallActionButton
-                            label={`停止 ${item.name}`}
-                            onClick={() => {
-                              setSelectedTunnelID(item.id);
-                              void runTunnelAction("stop", item);
-                            }}
-                          >
-                            <Square className="h-3.5 w-3.5" />
-                          </SmallActionButton>
-                        )}
-                        <SmallActionButton
-                          label={`编辑 ${item.name}`}
-                          onClick={() => {
-                            setSelectedTunnelID(item.id);
-                            openEditTunnel(item);
-                          }}
-                        >
-                          <SquarePen className="h-3.5 w-3.5" />
-                        </SmallActionButton>
-                        <SmallActionButton
-                          danger
-                          label={`删除 ${item.name}`}
-                          onClick={() => {
-                            setSelectedTunnelID(item.id);
-                            void removeTunnel(item);
-                          }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </SmallActionButton>
-                      </div>
-                    </div>
+                      item={item}
+                      onAction={handleTunnelAction}
+                      onDelete={handleDeleteTunnel}
+                      onEdit={handleEditTunnel}
+                      onSelect={handleSelectTunnel}
+                    />
                   ))}
                 </div>
               )}
@@ -807,27 +802,162 @@ function SectionEmpty({ message }: { message: string }) {
   );
 }
 
+const TunnelCard = memo(function TunnelCard({
+  item,
+  isRefreshing,
+  isSelected,
+  currentNodeLabel,
+  currentNodeRegion,
+  onSelect,
+  onAction,
+  onEdit,
+  onDelete,
+}: {
+  item: TunnelView;
+  isRefreshing: boolean;
+  isSelected: boolean;
+  currentNodeLabel: string;
+  currentNodeRegion: string;
+  onSelect: (tunnelID: string) => void;
+  onAction: (actionName: TunnelActionName, item: TunnelView) => void;
+  onEdit: (item: TunnelView) => void;
+  onDelete: (item: TunnelView) => void;
+}) {
+  return (
+    <div
+      aria-label={`隧道 ${item.name}`}
+      aria-busy={isRefreshing}
+      className={cn(
+        "grid min-h-[144px] gap-4 rounded-[24px] border px-4 py-3.5 text-left transition-[opacity,border-color,background-color] duration-200",
+        isRefreshing ? "opacity-60" : "",
+        item.status === "stopped" ? "opacity-55 grayscale" : "",
+        isSelected
+          ? "border-violet-400/35 bg-[linear-gradient(180deg,rgba(42,38,74,0.95),rgba(26,31,58,0.92))] shadow-[0_0_0_1px_rgba(167,139,250,0.16)_inset]"
+          : "border-white/10 bg-[linear-gradient(180deg,rgba(39,41,72,0.9),rgba(33,36,66,0.88))] hover:border-white/18 hover:bg-[linear-gradient(180deg,rgba(45,47,81,0.92),rgba(36,39,72,0.9))]",
+      )}
+      role="group"
+    >
+      <div
+        aria-pressed={isSelected}
+        className="grid min-h-0 gap-4"
+        onClick={() => onSelect(item.id)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect(item.id);
+          }
+        }}
+        role="button"
+        tabIndex={0}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-2">
+            <p className="line-clamp-2 text-[0.95rem] font-semibold leading-6 text-white">{item.name}</p>
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                aria-label={`${currentNodeRegion} 旗帜`}
+                className="emoji-flag inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/14 bg-white/10 text-base shadow-[0_10px_24px_rgba(2,8,20,0.2)]"
+              >
+                {formatRegionFlag(currentNodeRegion)}
+              </span>
+              <p className="truncate text-xs text-white/62">
+                {currentNodeLabel}
+              </p>
+            </div>
+          </div>
+          <div className="grid shrink-0 grid-cols-2 gap-2">
+            <SmallActionButton disabled={isRefreshing} label={`刷新 ${item.name}`} onClick={() => onAction("refresh", item)}>
+              <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing ? "animate-spin" : "")} />
+            </SmallActionButton>
+            {item.status === "stopped" ? (
+              <SmallActionButton disabled={isRefreshing} label={`启动 ${item.name}`} onClick={() => onAction("start", item)} tone="success">
+                <Play className="h-3.5 w-3.5" />
+              </SmallActionButton>
+            ) : (
+              <SmallActionButton disabled={isRefreshing} label={`停止 ${item.name}`} onClick={() => onAction("stop", item)} tone="danger">
+                <Square className="h-3.5 w-3.5" />
+              </SmallActionButton>
+            )}
+            <SmallActionButton disabled={isRefreshing} label={`编辑 ${item.name}`} onClick={() => onEdit(item)}>
+              <SquarePen className="h-3.5 w-3.5" />
+            </SmallActionButton>
+            <SmallActionButton disabled={isRefreshing} label={`删除 ${item.name}`} onClick={() => onDelete(item)} tone="danger">
+              <Trash2 className="h-3.5 w-3.5" />
+            </SmallActionButton>
+          </div>
+        </div>
+
+        <div className="min-h-0" />
+
+        <div className="mt-auto flex items-end justify-between gap-3">
+          <div className="grid gap-1">
+            <p className="text-[11px] uppercase tracking-[0.12em] text-[var(--muted-foreground)]">
+              监听地址
+            </p>
+            <p className="text-xs text-white/78">
+              {item.listen_host}:{item.listen_port}
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-2 text-right">
+            <span
+              className="font-display text-[11px] tracking-[0.12em] text-white/55"
+              title={`最近刷新 ${formatDateTime(item.last_refresh_at)}`}
+            >
+              {formatCompactRelativeTime(item.last_refresh_at)}
+            </span>
+            <div className="flex items-center gap-2">
+              <span
+                aria-label={item.has_auth ? "认证已启用" : "认证未启用"}
+                className={cn(
+                  "inline-flex h-7 w-7 items-center justify-center rounded-full border",
+                  item.has_auth
+                    ? "border-sky-300/28 bg-sky-400/14 text-sky-100"
+                    : "border-white/12 bg-white/6 text-white/45",
+                )}
+                title={item.has_auth ? "认证已启用" : "认证未启用"}
+              >
+                {item.has_auth ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldOff className="h-3.5 w-3.5" />}
+              </span>
+              <Badge className="tracking-[0.08em]" tone={tunnelStatusTone(item.status)}>
+                {formatTunnelStatus(item.status)}
+              </Badge>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 function SmallActionButton({
   children,
-  danger,
+  disabled = false,
   label,
   onClick,
+  tone = "default",
 }: {
   children: ReactNode;
-  danger?: boolean;
+  disabled?: boolean;
   label: string;
   onClick: () => void;
+  tone?: "default" | "success" | "danger";
 }) {
   return (
     <button
       aria-label={label}
       className={cn(
-        "inline-flex h-10 w-10 items-center justify-center rounded-2xl border p-0 text-sm transition-colors",
-        danger
+        "inline-flex h-8 w-8 items-center justify-center rounded-full border p-0 text-sm transition-colors disabled:pointer-events-none disabled:opacity-50",
+        tone === "danger"
           ? "border-rose-400/25 bg-rose-500/12 text-rose-100 hover:bg-rose-500/18"
-          : "border-white/10 bg-white/5 text-white hover:bg-white/10",
+          : tone === "success"
+            ? "border-emerald-400/28 bg-emerald-500/12 text-emerald-100 hover:bg-emerald-500/18"
+            : "border-white/10 bg-black/20 text-white/75 hover:bg-white/10 hover:text-white",
       )}
-      onClick={onClick}
+      disabled={disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
       title={label}
       type="button"
     >
