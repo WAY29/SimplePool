@@ -58,6 +58,7 @@ type TunnelRepository interface {
 	Create(ctx context.Context, tunnel *domain.Tunnel) error
 	Update(ctx context.Context, tunnel *domain.Tunnel) error
 	GetByID(ctx context.Context, id string) (*domain.Tunnel, error)
+	GetByGroupIDAndName(ctx context.Context, groupID, name string) (*domain.Tunnel, error)
 	List(ctx context.Context) ([]*domain.Tunnel, error)
 	DeleteByID(ctx context.Context, id string) error
 }

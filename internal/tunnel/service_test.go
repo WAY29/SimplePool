@@ -44,6 +44,9 @@ func TestTunnelServiceCreateStopStartAndDelete(t *testing.T) {
 	if !created.HasAuth {
 		t.Fatal("HasAuth = false, want true")
 	}
+	if got, want := created.RuntimeDir, filepath.Join(deps.runtimeRoot, "亚洲-proxy-a"); got != want {
+		t.Fatalf("RuntimeDir = %q, want %q", got, want)
+	}
 	storedAfterCreate, err := deps.repos.Tunnels.GetByID(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("Tunnels.GetByID() after create error = %v", err)
@@ -118,6 +121,54 @@ func TestTunnelServiceCreateStopStartAndDelete(t *testing.T) {
 	}
 }
 
+func TestTunnelServiceUpdateStoppedReplacesRuntimeDirWithTunnelName(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	created, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	oldRuntimeDir := created.RuntimeDir
+
+	if _, err := service.Stop(ctx, created.ID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	updated, err := service.Update(ctx, created.ID, tunnel.UpdateInput{
+		Name:    "proxy-b",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.RuntimeDir == oldRuntimeDir {
+		t.Fatalf("RuntimeDir = %q, want new dir after rename", updated.RuntimeDir)
+	}
+	if got, want := updated.RuntimeDir, filepath.Join(deps.runtimeRoot, "亚洲-proxy-b"); got != want {
+		t.Fatalf("RuntimeDir = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(oldRuntimeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old runtime dir still exists, err = %v", err)
+	}
+
+	started, err := service.Start(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if started.RuntimeDir != updated.RuntimeDir {
+		t.Fatalf("Start() RuntimeDir = %q, want %q", started.RuntimeDir, updated.RuntimeDir)
+	}
+	if _, err := os.Stat(started.RuntimeDir); err != nil {
+		t.Fatalf("Stat(runtimeDir) error = %v", err)
+	}
+}
+
 func TestTunnelServiceRefreshFailureKeepsOldRuntimeAndMarksDegraded(t *testing.T) {
 	ctx := context.Background()
 	service, deps := newTunnelService(t)
@@ -180,6 +231,44 @@ func TestTunnelServiceRefreshFailureKeepsOldRuntimeAndMarksDegraded(t *testing.T
 	}
 }
 
+func TestTunnelServiceAllowsSameTunnelNameAcrossGroupsAndRejectsDuplicateInSameGroup(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	asiaGroupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+	usGroupID := seedTunnelGroup(t, ctx, deps.groupService, "美国", "^US-")
+
+	asiaTunnel, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "shared",
+		GroupID: asiaGroupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() asia error = %v", err)
+	}
+	if got, want := asiaTunnel.RuntimeDir, filepath.Join(deps.runtimeRoot, "亚洲-shared"); got != want {
+		t.Fatalf("asia RuntimeDir = %q, want %q", got, want)
+	}
+
+	usTunnel, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "shared",
+		GroupID: usGroupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() us error = %v", err)
+	}
+	if got, want := usTunnel.RuntimeDir, filepath.Join(deps.runtimeRoot, "美国-shared"); got != want {
+		t.Fatalf("us RuntimeDir = %q, want %q", got, want)
+	}
+
+	_, err = service.Create(ctx, tunnel.CreateInput{
+		Name:    "shared",
+		GroupID: asiaGroupID,
+	})
+	if !errors.Is(err, tunnel.ErrTunnelConflict) {
+		t.Fatalf("Create() duplicate error = %v, want ErrTunnelConflict", err)
+	}
+}
+
 func TestTunnelServiceRebuildFailureFallsBackToStoredRuntimeConfig(t *testing.T) {
 	ctx := context.Background()
 	service, deps := newTunnelService(t)
@@ -203,7 +292,7 @@ func TestTunnelServiceRebuildFailureFallsBackToStoredRuntimeConfig(t *testing.T)
 		t.Fatal("RuntimeConfigJSON empty before rebuild")
 	}
 
-	layout := singbox.NewRuntimeLayout(deps.runtimeRoot, created.ID)
+	layout := singbox.NewRuntimeGroupLayout(deps.runtimeRoot, "亚洲", created.Name)
 	if err := os.Remove(layout.ConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Remove(config) error = %v", err)
 	}
@@ -260,6 +349,7 @@ func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	oldRuntimeDir := created.RuntimeDir
 
 	updated, err := service.Update(ctx, created.ID, tunnel.UpdateInput{
 		Name:     "proxy-b",
@@ -275,6 +365,15 @@ func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *
 	}
 	if updated.CurrentNodeID == nil || *updated.CurrentNodeID != "node-us-mid" {
 		t.Fatalf("Update() CurrentNodeID = %v, want node-us-mid", updated.CurrentNodeID)
+	}
+	if updated.RuntimeDir == oldRuntimeDir {
+		t.Fatalf("RuntimeDir = %q, want renamed runtime dir", updated.RuntimeDir)
+	}
+	if got, want := updated.RuntimeDir, filepath.Join(deps.runtimeRoot, "美国-proxy-b"); got != want {
+		t.Fatalf("RuntimeDir = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(oldRuntimeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old runtime dir still exists, err = %v", err)
 	}
 	state := deps.runtime.state(created.ID)
 	if state == nil || !state.running {
@@ -294,11 +393,22 @@ func TestTunnelServiceUpdateRunningRebuildsRuntimeAndRefreshSwitchesSelector(t *
 		t.Fatalf("Nodes.Update(node-hk-slow) error = %v", err)
 	}
 
-	if _, err := service.Update(ctx, created.ID, tunnel.UpdateInput{
+	secondOldRuntimeDir := updated.RuntimeDir
+	secondUpdated, err := service.Update(ctx, created.ID, tunnel.UpdateInput{
 		Name:    "proxy-c",
 		GroupID: asiaGroupID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Update() second error = %v", err)
+	}
+	if secondUpdated.RuntimeDir == secondOldRuntimeDir {
+		t.Fatalf("RuntimeDir = %q, want renamed runtime dir", secondUpdated.RuntimeDir)
+	}
+	if got, want := secondUpdated.RuntimeDir, filepath.Join(deps.runtimeRoot, "亚洲-proxy-c"); got != want {
+		t.Fatalf("RuntimeDir = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(secondOldRuntimeDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("second old runtime dir still exists, err = %v", err)
 	}
 	advanceTunnelClock(deps.now, 6*time.Minute)
 

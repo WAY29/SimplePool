@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ var (
 	ErrNoAvailableNodes = errors.New("tunnel: no available nodes")
 	ErrTunnelNotRunning = errors.New("tunnel: tunnel not running")
 	ErrRuntimeConfigNil = errors.New("tunnel: runtime config missing")
+	ErrTunnelConflict   = errors.New("tunnel: duplicate name in group")
 )
 
 const selectorTag = "tunnel-selector"
@@ -237,10 +239,16 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*View, error) 
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureUniqueTunnelName(ctx, groupID, name, ""); err != nil {
+		return nil, err
+	}
 
 	now := s.now().UTC()
 	id := uuid.NewString()
-	layout := singbox.NewRuntimeLayout(s.runtimeRoot, id)
+	layout, err := s.runtimeLayoutFor(ctx, groupID, name)
+	if err != nil {
+		return nil, err
+	}
 
 	pair, err := s.portAllocator.AllocatePair()
 	if err != nil {
@@ -343,10 +351,15 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*Vi
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureUniqueTunnelName(ctx, groupID, name, current.ID); err != nil {
+		return nil, err
+	}
 	if current.Status == domain.TunnelStatusStopped {
-		if _, err := s.groups.Get(ctx, groupID); err != nil {
+		layout, err := s.runtimeLayoutFor(ctx, groupID, name)
+		if err != nil {
 			return nil, err
 		}
+		oldRuntimeDir := current.RuntimeDir
 		authCiphertext, authNonce, err := s.encryptAuth(current.ID, proxyAuth)
 		if err != nil {
 			return nil, err
@@ -357,9 +370,15 @@ func (s *Service) Update(ctx context.Context, id string, input UpdateInput) (*Vi
 		current.AuthUsernameCiphertext = nil
 		current.AuthPasswordCiphertext = authCiphertext
 		current.AuthNonce = authNonce
+		current.RuntimeDir = layout.RootDir
 		current.UpdatedAt = s.now().UTC()
 		if err := s.tunnels.Update(ctx, current); err != nil {
 			return nil, err
+		}
+		if oldRuntimeDir != "" && oldRuntimeDir != current.RuntimeDir {
+			if err := os.RemoveAll(oldRuntimeDir); err != nil {
+				return nil, err
+			}
 		}
 		s.recordEvent(ctx, current.ID, "tunnel.updated", map[string]any{
 			"group_id": groupID,
@@ -399,7 +418,10 @@ func (s *Service) Start(ctx context.Context, id string) (*View, error) {
 		return nil, err
 	}
 
-	layout := singbox.NewRuntimeLayout(s.runtimeRoot, current.ID)
+	layout, err := s.runtimeLayoutFor(ctx, current.GroupID, current.Name)
+	if err != nil {
+		return nil, err
+	}
 	prepared, err := s.prepareRuntime(ctx, current.ID, current.GroupID, layout, current.ListenHost, current.ListenPort, current.ControllerPort, controllerSecret, proxyAuth)
 	if err != nil {
 		return nil, err
@@ -411,6 +433,7 @@ func (s *Service) Start(ctx context.Context, id string) (*View, error) {
 
 	current.Status = domain.TunnelStatusRunning
 	current.CurrentNodeID = stringPtr(prepared.currentNode.ID)
+	current.RuntimeDir = layout.RootDir
 	current.RuntimeConfigJSON = string(prepared.config)
 	current.LastRefreshError = ""
 	current.UpdatedAt = s.now().UTC()
@@ -465,7 +488,10 @@ func (s *Service) Refresh(ctx context.Context, id string) (*View, error) {
 		return nil, err
 	}
 
-	layout := singbox.NewRuntimeLayout(s.runtimeRoot, current.ID)
+	layout, err := s.runtimeLayoutFor(ctx, current.GroupID, current.Name)
+	if err != nil {
+		return nil, err
+	}
 	prepared, err := s.prepareRuntime(ctx, current.ID, current.GroupID, layout, current.ListenHost, current.ListenPort, current.ControllerPort, controllerSecret, proxyAuth)
 	if err != nil {
 		return nil, s.markRefreshFailure(ctx, current, err)
@@ -582,7 +608,12 @@ type rebuildInput struct {
 }
 
 func (s *Service) rebuildTunnel(ctx context.Context, current *domain.Tunnel, input rebuildInput) (*View, error) {
-	layout := singbox.NewRuntimeLayout(s.runtimeRoot, current.ID)
+	oldRuntimeDir := current.RuntimeDir
+	oldLayout := runtimeLayoutFromRoot(current.RuntimeDir)
+	layout, err := s.runtimeLayoutFor(ctx, input.GroupID, input.Name)
+	if err != nil {
+		return nil, err
+	}
 	oldConfig, err := loadStoredRuntimeConfig(current)
 	if err != nil {
 		return nil, err
@@ -608,7 +639,7 @@ func (s *Service) rebuildTunnel(ctx context.Context, current *domain.Tunnel, inp
 	}
 	if err := s.runtime.Start(ctx, current.ID, layout, prepared.config); err != nil {
 		prepared.stopBackground()
-		restartErr := s.runtime.Start(ctx, current.ID, layout, oldConfig)
+		restartErr := s.runtime.Start(ctx, current.ID, oldLayout, oldConfig)
 		if restartErr != nil {
 			err = errors.Join(err, restartErr)
 		}
@@ -634,6 +665,10 @@ func (s *Service) rebuildTunnel(ctx context.Context, current *domain.Tunnel, inp
 		current.AuthUsernameCiphertext = nil
 		current.AuthPasswordCiphertext = authCiphertext
 		current.AuthNonce = authNonce
+		current.RuntimeDir = layout.RootDir
+	}
+	if current.RuntimeDir == "" {
+		current.RuntimeDir = layout.RootDir
 	}
 	now := s.now().UTC()
 	current.Status = domain.TunnelStatusRunning
@@ -647,9 +682,14 @@ func (s *Service) rebuildTunnel(ctx context.Context, current *domain.Tunnel, inp
 	if err := s.tunnels.Update(ctx, current); err != nil {
 		prepared.stopBackground()
 		_ = s.runtime.Stop(ctx, current.ID)
-		_ = s.runtime.Start(ctx, current.ID, layout, oldConfig)
+		_ = s.runtime.Start(ctx, current.ID, oldLayout, oldConfig)
 		*current = previous
 		return nil, err
+	}
+	if oldRuntimeDir != "" && oldRuntimeDir != current.RuntimeDir {
+		if err := os.RemoveAll(oldRuntimeDir); err != nil {
+			return nil, err
+		}
 	}
 
 	s.recordEvent(ctx, current.ID, input.RecordEvent, map[string]any{
@@ -748,7 +788,6 @@ func (s *Service) renderPreparedRuntime(layout singbox.RuntimeLayout, listenHost
 		Auth:             proxyAuth,
 		ControllerPort:   controllerPort,
 		ControllerSecret: controllerSecret,
-		CacheFilePath:    layout.CachePath,
 		Nodes:            selectedRuntimeNodes,
 		CurrentNodeID:    currentNode.ID,
 	})
@@ -1108,6 +1147,36 @@ func sameStringSet(left, right []string) bool {
 
 func stringPtr(value string) *string {
 	return &value
+}
+
+func (s *Service) runtimeLayoutFor(ctx context.Context, groupID, tunnelName string) (singbox.RuntimeLayout, error) {
+	groupView, err := s.groups.Get(ctx, groupID)
+	if err != nil {
+		return singbox.RuntimeLayout{}, err
+	}
+	return singbox.NewRuntimeGroupLayout(s.runtimeRoot, groupView.Name, tunnelName), nil
+}
+
+func (s *Service) ensureUniqueTunnelName(ctx context.Context, groupID, name, excludeID string) error {
+	item, err := s.tunnels.GetByGroupIDAndName(ctx, groupID, name)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if excludeID != "" && item.ID == excludeID {
+		return nil
+	}
+	return ErrTunnelConflict
+}
+
+func runtimeLayoutFromRoot(root string) singbox.RuntimeLayout {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		root = "tunnel"
+	}
+	return singbox.NewRuntimeLayoutFromRoot(filepath.Clean(root))
 }
 
 func (s *Service) logInfo(message string, args ...any) {

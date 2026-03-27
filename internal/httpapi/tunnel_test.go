@@ -68,3 +68,31 @@ func TestTunnelRoutesHappyPath(t *testing.T) {
 		t.Fatalf("DELETE /api/tunnels/:id status = %d, want 204", deleteResp.Code)
 	}
 }
+
+func TestTunnelRoutesAllowCrossGroupSameNameAndRejectSameGroupDuplicate(t *testing.T) {
+	router, token := newProtectedRouter(t)
+
+	firstResp := performJSON(t, router, http.MethodPost, "/api/tunnels", token, map[string]any{
+		"name":     "shared",
+		"group_id": "group-asia",
+	})
+	if firstResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/tunnels first status = %d, want 201", firstResp.Code)
+	}
+
+	secondResp := performJSON(t, router, http.MethodPost, "/api/tunnels", token, map[string]any{
+		"name":     "shared",
+		"group_id": "group-us",
+	})
+	if secondResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/tunnels second status = %d, want 201", secondResp.Code)
+	}
+
+	duplicateResp := performJSON(t, router, http.MethodPost, "/api/tunnels", token, map[string]any{
+		"name":     "shared",
+		"group_id": "group-asia",
+	})
+	if duplicateResp.Code != http.StatusConflict {
+		t.Fatalf("POST /api/tunnels duplicate status = %d, want 409", duplicateResp.Code)
+	}
+}

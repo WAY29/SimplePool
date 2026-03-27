@@ -236,17 +236,15 @@ V1 采用：
 data/
   app.db
   runtime/
-    tunnels/
-      tunnel-<id>/
-        cache.db
-        stdout.log
-        stderr.log
+    <group-name>-<tunnel-name>/
+      stdout.log
+      stderr.log
 ```
 
 补充：
 
 - 渲染后的最新运行时配置持久化在 SQLite `tunnels.runtime_config_json`
-- 运行时目录只保留缓存和日志，不再把 `config.json` 作为业务回滚真源
+- 运行时目录只保留日志，不再把 `config.json` 作为业务回滚真源，也不再为每个隧道落单独的 `cache.db`
 
 对应配置的核心结构：
 

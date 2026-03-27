@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -28,7 +29,6 @@ func TestConfigRendererRendersHTTPInboundSelectorAndClashAPI(t *testing.T) {
 		LogLevel:         "warning",
 		ControllerPort:   19090,
 		ControllerSecret: "secret-1",
-		CacheFilePath:    "/tmp/cache.db",
 		CurrentNodeID:    "2",
 		Auth: &singbox.ProxyAuth{
 			Username: "user-1",
@@ -107,6 +107,9 @@ func TestConfigRendererRendersHTTPInboundSelectorAndClashAPI(t *testing.T) {
 	}
 	if clashAPI["secret"] != "secret-1" {
 		t.Fatalf("secret = %v, want secret-1", clashAPI["secret"])
+	}
+	if _, exists := experimental["cache_file"]; exists {
+		t.Fatalf("experimental.cache_file should be omitted, got %+v", experimental["cache_file"])
 	}
 	logConfig := config["log"].(map[string]any)
 	if logConfig["level"] != "warn" {
@@ -323,9 +326,22 @@ func TestPortAllocatorReservesAndReleasesPorts(t *testing.T) {
 	_ = listener.Close()
 }
 
+func TestNewRuntimeLayoutIncludesTunnelName(t *testing.T) {
+	tempDir := t.TempDir()
+	layout := singbox.NewRuntimeGroupLayout(tempDir, "Asia/1", "Proxy A/1")
+
+	wantRoot := filepath.Join(tempDir, "Asia-1-Proxy-A-1")
+	if layout.RootDir != wantRoot {
+		t.Fatalf("RootDir = %q, want %q", layout.RootDir, wantRoot)
+	}
+	if layout.ConfigPath != filepath.Join(wantRoot, "config.json") {
+		t.Fatalf("ConfigPath = %q, want under runtime root", layout.ConfigPath)
+	}
+}
+
 func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 	tempDir := t.TempDir()
-	layout := singbox.NewRuntimeLayout(tempDir, "abc")
+	layout := singbox.NewRuntimeGroupLayout(tempDir, "asia", "proxy-a")
 	compiler := &fakeCompiler{formatted: []byte("{\n  \"ok\": true\n}\n")}
 	box := &fakeBox{}
 	factory := &fakeFactory{box: box}
@@ -357,7 +373,7 @@ func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 		t.Fatalf("Stat(config) error = %v, want not exist", err)
 	}
 
-	factory.writer.WriteMessage(sbLog.LevelInfo, "runtime started")
+	factory.writer.WriteMessage(sbLog.LevelInfo, "[0041] [\x1b[38;5;226m1273129477\x1b[0m 0ms]")
 	factory.writer.WriteMessage(sbLog.LevelError, "runtime failed")
 
 	if err := supervisor.Stop(); err != nil {
@@ -378,8 +394,11 @@ func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(stderr) error = %v", err)
 	}
-	if !bytes.Contains(stdout, []byte("runtime started")) {
-		t.Fatalf("stdout log = %q, want runtime started", stdout)
+	if bytes.Contains(stdout, []byte("\x1b[")) {
+		t.Fatalf("stdout log = %q, want ansi escape removed", stdout)
+	}
+	if !bytes.Contains(stdout, []byte("[0041] [1273129477 0ms]")) {
+		t.Fatalf("stdout log = %q, want cleaned latency line", stdout)
 	}
 	if !bytes.Contains(stderr, []byte("runtime failed")) {
 		t.Fatalf("stderr log = %q, want runtime failed", stderr)
@@ -388,7 +407,7 @@ func TestSupervisorLifecycleAndLogFiles(t *testing.T) {
 
 func TestSupervisorStartDetachesRuntimeLifetimeFromCallerContext(t *testing.T) {
 	tempDir := t.TempDir()
-	layout := singbox.NewRuntimeLayout(tempDir, "detached")
+	layout := singbox.NewRuntimeGroupLayout(tempDir, "asia", "proxy-a")
 	compiler := &fakeCompiler{formatted: []byte("{\n  \"ok\": true\n}\n")}
 	box := &fakeBox{}
 	factory := &fakeFactory{box: box}

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,8 @@ var (
 	ErrAlreadyRunning     = errors.New("singbox: runtime already running")
 	ErrUnexpectedResponse = errors.New("singbox: unexpected clash api response")
 	ErrSelectorSwitch     = errors.New("singbox: selector switch failed")
+	ansiSequencePattern   = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	runtimeNamePattern    = regexp.MustCompile(`[^\pL\pN._-]+`)
 )
 
 type RuntimeNode struct {
@@ -65,7 +68,6 @@ type RenderInput struct {
 	Auth             *ProxyAuth
 	ControllerPort   int
 	ControllerSecret string
-	CacheFilePath    string
 	Nodes            []RuntimeNode
 	CurrentNodeID    string
 	DisableSelector  bool
@@ -74,7 +76,6 @@ type RenderInput struct {
 type RuntimeLayout struct {
 	RootDir       string
 	ConfigPath    string
-	CachePath     string
 	StdoutLogPath string
 	StderrLogPath string
 }
@@ -161,15 +162,44 @@ type ProxyInfo struct {
 	All  []string `json:"all,omitempty"`
 }
 
-func NewRuntimeLayout(runtimeRoot, tunnelID string) RuntimeLayout {
-	root := filepath.Join(runtimeRoot, "tunnels", "tunnel-"+tunnelID)
+func NewRuntimeLayout(runtimeRoot, tunnelName string) RuntimeLayout {
+	root := filepath.Join(runtimeRoot, sanitizeRuntimeName(tunnelName))
+	return newRuntimeLayoutFromRoot(root)
+}
+
+func NewRuntimeGroupLayout(runtimeRoot, groupName, tunnelName string) RuntimeLayout {
+	parts := make([]string, 0, 2)
+	if groupName = sanitizeRuntimeName(groupName); groupName != "" && groupName != "tunnel" {
+		parts = append(parts, groupName)
+	}
+	if tunnelName = sanitizeRuntimeName(tunnelName); tunnelName != "" && tunnelName != "tunnel" {
+		parts = append(parts, tunnelName)
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "tunnel")
+	}
+	root := filepath.Join(runtimeRoot, strings.Join(parts, "-"))
+	return newRuntimeLayoutFromRoot(root)
+}
+
+func NewRuntimeLayoutFromRoot(root string) RuntimeLayout {
+	return newRuntimeLayoutFromRoot(root)
+}
+
+func newRuntimeLayoutFromRoot(root string) RuntimeLayout {
 	return RuntimeLayout{
 		RootDir:       root,
 		ConfigPath:    filepath.Join(root, "config.json"),
-		CachePath:     filepath.Join(root, "cache.db"),
 		StdoutLogPath: filepath.Join(root, "stdout.log"),
 		StderrLogPath: filepath.Join(root, "stderr.log"),
 	}
+}
+
+func sanitizeRuntimeName(name string) string {
+	name = strings.TrimSpace(name)
+	name = runtimeNamePattern.ReplaceAllString(name, "-")
+	name = strings.Trim(name, "-.")
+	return name
 }
 
 func NewConfigRenderer() *ConfigRenderer {
@@ -230,12 +260,6 @@ func (r *ConfigRenderer) Render(input RenderInput) ([]byte, error) {
 			"external_controller": fmt.Sprintf("127.0.0.1:%d", input.ControllerPort),
 			"secret":              input.ControllerSecret,
 		},
-	}
-	if input.CacheFilePath != "" {
-		experimental["cache_file"] = map[string]any{
-			"enabled": true,
-			"path":    input.CacheFilePath,
-		}
 	}
 
 	config := map[string]any{
@@ -623,10 +647,17 @@ func (w *fileLogWriter) WriteMessage(level sbLog.Level, message string) {
 	if level <= sbLog.LevelWarn {
 		target = w.stderr
 	}
-	line := fmt.Sprintf("%s [%s] %s\n", w.now().UTC().Format(time.RFC3339Nano), sbLog.FormatLevel(level), message)
+	line := fmt.Sprintf("%s [%s] %s\n", w.now().UTC().Format(time.RFC3339Nano), sbLog.FormatLevel(level), stripANSISequences(message))
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	_, _ = target.WriteString(line)
+}
+
+func stripANSISequences(value string) string {
+	if value == "" {
+		return ""
+	}
+	return ansiSequencePattern.ReplaceAllString(value, "")
 }
 
 func (w *fileLogWriter) Close() error {

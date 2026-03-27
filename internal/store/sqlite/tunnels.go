@@ -82,6 +82,15 @@ func (r *TunnelRepository) GetByID(ctx context.Context, id string) (*domain.Tunn
 	return item, nil
 }
 
+func (r *TunnelRepository) GetByGroupIDAndName(ctx context.Context, groupID, name string) (*domain.Tunnel, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT id, name, group_id, listen_host, listen_port, status, current_node_id, auth_username_ciphertext, auth_password_ciphertext, auth_nonce, controller_port, controller_secret_ciphertext, controller_secret_nonce, runtime_dir, runtime_config_json, last_refresh_at, last_refresh_error, created_at, updated_at FROM tunnels WHERE group_id = ? AND name = ?`, groupID, name)
+	item, err := scanTunnel(row)
+	if err != nil {
+		return nil, translateNotFound(err)
+	}
+	return item, nil
+}
+
 func (r *TunnelRepository) List(ctx context.Context) ([]*domain.Tunnel, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT id, name, group_id, listen_host, listen_port, status, current_node_id, auth_username_ciphertext, auth_password_ciphertext, auth_nonce, controller_port, controller_secret_ciphertext, controller_secret_nonce, runtime_dir, runtime_config_json, last_refresh_at, last_refresh_error, created_at, updated_at FROM tunnels ORDER BY created_at ASC`)
 	if err != nil {
