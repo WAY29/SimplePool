@@ -920,10 +920,10 @@ describe("App", () => {
     expect(await screen.findByText("美国-C3")).toBeInTheDocument();
   });
 
-  it("节点页支持新增编辑删除订阅", async () => {
+  it("节点页支持新增编辑删除订阅，并使用自定义确认弹窗", async () => {
     window.history.pushState({}, "", "/nodes");
     window.localStorage.setItem("simplepool.session_token", "token-1");
-    installAuthenticatedFetchMock({
+    const fetchMock = installAuthenticatedFetchMock({
       subscriptions: [
         {
           id: "subscription-1",
@@ -938,7 +938,9 @@ describe("App", () => {
         },
       ],
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.spyOn(window, "confirm").mockImplementation(() => {
+      throw new Error("不应调用浏览器原生确认弹窗");
+    });
 
     renderApp();
 
@@ -969,9 +971,26 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "删除订阅" }));
 
+    expect(await screen.findByText("确认删除订阅")).toBeInTheDocument();
+    expect(screen.getByText("关联订阅节点会一起删除。")).toBeInTheDocument();
+    expect(countFetchCalls(fetchMock, /\/api\/subscriptions\/subscription-2$/, "DELETE")).toBe(0);
+
+    await user.click(screen.getByRole("button", { name: "取消" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("确认删除订阅")).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "筛选 新增订阅-改" })).toBeInTheDocument();
+    expect(countFetchCalls(fetchMock, /\/api\/subscriptions\/subscription-2$/, "DELETE")).toBe(0);
+
+    await user.click(screen.getByRole("button", { name: "删除订阅" }));
+    await user.click(await screen.findByRole("button", { name: "确认删除" }));
+
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "筛选 新增订阅-改" })).not.toBeInTheDocument();
     });
+    expect(countFetchCalls(fetchMock, /\/api\/subscriptions\/subscription-2$/, "DELETE")).toBe(1);
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 
   it("节点页批量探测仅作用于当前订阅筛选并跳过禁用节点", async () => {

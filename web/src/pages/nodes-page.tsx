@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, EmptyState } from "@/components/layout/app-shell";
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { IconButton } from "@/components/ui/button";
 import {
@@ -78,6 +79,10 @@ const defaultSubscriptionForm: SubscriptionFormValues = {
   enabled: true,
 };
 
+type DeleteTarget =
+  | { kind: "node"; item: NodeView }
+  | { kind: "subscription"; item: SubscriptionView };
+
 export function NodesPage() {
   const { run } = useAuthorizedRequest();
   const metrics = useShellMetrics();
@@ -92,6 +97,7 @@ export function NodesPage() {
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSubscriptionForm, setShowSubscriptionForm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [editing, setEditing] = useState<NodeView | null>(null);
   const [editingSubscription, setEditingSubscription] = useState<SubscriptionView | null>(null);
   const [search, setSearch] = useState("");
@@ -104,6 +110,7 @@ export function NodesPage() {
   const [probeResults, setProbeResults] = useState<Record<string, ProbeBatchResult>>({});
   const [probingNodeIDs, setProbingNodeIDs] = useState<Record<string, boolean>>({});
   const [refreshingSubscriptionIDs, setRefreshingSubscriptionIDs] = useState<Record<string, boolean>>({});
+  const [deleting, setDeleting] = useState(false);
   const [viewMode, setViewMode] = usePersistedViewMode("simplepool.nodes.view_mode", "grid");
   const [subscriptionFilter, setSubscriptionFilter] = useState<string>(ALL_SUBSCRIPTIONS);
   const submitLabel = submittingNode ? "提交中..." : editing ? "保存修改" : "创建节点";
@@ -370,32 +377,40 @@ export function NodesPage() {
     }
   }
 
-  async function remove(item: NodeView) {
-    if (!window.confirm(`确认删除节点 ${item.name}？`)) {
-      return;
-    }
-    try {
-      await run((token) => api.nodes.remove(token, item.id));
-      setItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
-      setSelected((current) => (current?.id === item.id ? null : current));
-      toast.success("节点已删除");
-      await metrics.refresh();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "删除失败");
-    }
+  function requestRemoveNode(item: NodeView) {
+    setDeleteTarget({ kind: "node", item });
   }
 
-  async function removeSubscription(item: SubscriptionView) {
-    if (!window.confirm(`确认删除订阅 ${item.name}？关联订阅节点会一起删除。`)) {
+  function requestRemoveSubscription(item: SubscriptionView) {
+    setDeleteTarget({ kind: "subscription", item });
+  }
+
+  async function confirmDelete() {
+    const target = deleteTarget;
+    if (!target) {
       return;
     }
+    setDeleting(true);
     try {
-      await run((token) => api.subscriptions.remove(token, item.id));
+      if (target.kind === "node") {
+        await run((token) => api.nodes.remove(token, target.item.id));
+        setItems((current) => current.filter((currentItem) => currentItem.id !== target.item.id));
+        setSelected((current) => (current?.id === target.item.id ? null : current));
+        toast.success("节点已删除");
+        setDeleteTarget(null);
+        await metrics.refresh();
+        return;
+      }
+
+      await run((token) => api.subscriptions.remove(token, target.item.id));
       toast.success("订阅已删除");
+      setDeleteTarget(null);
       await load();
       await metrics.refresh();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除失败");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -644,7 +659,7 @@ export function NodesPage() {
                     </IconButton>
                     <IconButton
                       label="删除订阅"
-                      onClick={() => void removeSubscription(selectedSubscription)}
+                      onClick={() => requestRemoveSubscription(selectedSubscription)}
                       variant="danger"
                     >
                       <Trash2 className="h-4 w-4" />
@@ -689,7 +704,7 @@ export function NodesPage() {
                   <IconButton label="编辑节点" onClick={() => openEdit(selected)} variant="secondary">
                     <SquarePen className="h-4 w-4" />
                   </IconButton>
-                  <IconButton label="删除" onClick={() => void remove(selected)} variant="danger">
+                  <IconButton label="删除" onClick={() => requestRemoveNode(selected)} variant="danger">
                     <Trash2 className="h-4 w-4" />
                   </IconButton>
                 </div>
@@ -727,6 +742,25 @@ export function NodesPage() {
           </div>
         </section>
       </div>
+
+      <DeleteConfirmDialog
+        busy={deleting}
+        description={
+          deleteTarget?.kind === "subscription"
+            ? "关联订阅节点会一起删除。"
+            : deleteTarget
+              ? `节点 ${deleteTarget.item.name} 删除后无法恢复。`
+              : ""
+        }
+        onConfirm={() => void confirmDelete()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null);
+          }
+        }}
+        open={Boolean(deleteTarget)}
+        title={deleteTarget?.kind === "subscription" ? "确认删除订阅" : "确认删除节点"}
+      />
 
       <Dialog onOpenChange={setShowForm} open={showForm}>
         <DialogContent>

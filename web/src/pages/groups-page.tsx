@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, LoaderCircle, Plus, SquarePen, Trash2, UsersRound, X } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, EmptyState, PanelTitle } from "@/components/layout/app-shell";
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { IconButton } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,9 +31,11 @@ export function GroupsPage() {
   const [memberLoading, setMemberLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<GroupView | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<GroupView | null>(null);
   const [form, setForm] = useState<GroupFormValues>(defaultForm);
   const [errors, setErrors] = useState<Partial<Record<keyof GroupFormValues, string>>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const submitLabel = submitting ? "提交中..." : editing ? "保存修改" : "创建分组";
 
   async function load() {
@@ -135,20 +138,28 @@ export function GroupsPage() {
     }
   }
 
-  async function remove(item: GroupView) {
-    if (!window.confirm(`确认删除分组 ${item.name}？`)) {
+  function requestRemove(item: GroupView) {
+    setDeleteTarget(item);
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) {
       return;
     }
+    setDeleting(true);
     try {
-      await run((token) => api.groups.remove(token, item.id));
-      setItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
-      if (selected?.id === item.id) {
+      await run((token) => api.groups.remove(token, deleteTarget.id));
+      setItems((current) => current.filter((currentItem) => currentItem.id !== deleteTarget.id));
+      if (selected?.id === deleteTarget.id) {
         setSelected(null);
         setMembers([]);
       }
+      setDeleteTarget(null);
       toast.success("分组已删除");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除失败");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -230,7 +241,7 @@ export function GroupsPage() {
                 <IconButton label="编辑" onClick={() => openEdit(selected)} variant="secondary">
                   <SquarePen className="h-4 w-4" />
                 </IconButton>
-                <IconButton label="删除" onClick={() => void remove(selected)} variant="danger">
+                <IconButton label="删除" onClick={() => requestRemove(selected)} variant="danger">
                   <Trash2 className="h-4 w-4" />
                 </IconButton>
               </div>
@@ -277,6 +288,19 @@ export function GroupsPage() {
           <EmptyState title="还没有选中分组" description="左侧选择一个分组后，这里会展示实时成员预览" />
         )}
       </div>
+
+      <DeleteConfirmDialog
+        busy={deleting}
+        description={deleteTarget ? `分组 ${deleteTarget.name} 删除后无法恢复。` : ""}
+        onConfirm={() => void confirmDelete()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null);
+          }
+        }}
+        open={Boolean(deleteTarget)}
+        title="确认删除分组"
+      />
 
       <Dialog onOpenChange={setShowForm} open={showForm}>
         <DialogContent>

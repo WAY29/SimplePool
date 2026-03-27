@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/app-shell";
+import { DeleteConfirmDialog } from "@/components/delete-confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { IconButton } from "@/components/ui/button";
 import { NodeCollectionView, NodeViewModeSwitch } from "@/components/nodes/node-collection-view";
@@ -67,6 +68,9 @@ const defaultTunnelForm: TunnelFormValues = {
 };
 
 type TunnelActionName = "refresh" | "start" | "stop";
+type DeleteTarget =
+  | { kind: "group"; item: GroupView }
+  | { kind: "tunnel"; item: TunnelView };
 
 export function WorkspacePage() {
   const { run } = useAuthorizedRequest();
@@ -89,6 +93,7 @@ export function WorkspacePage() {
   const [groupSubmitting, setGroupSubmitting] = useState(false);
   const [showTunnelForm, setShowTunnelForm] = useState(false);
   const [editingTunnel, setEditingTunnel] = useState<TunnelView | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [tunnelForm, setTunnelForm] = useState<TunnelFormValues>(defaultTunnelForm);
   const [tunnelErrors, setTunnelErrors] = useState<Partial<Record<keyof TunnelFormValues, string>>>({});
   const [tunnelSubmitting, setTunnelSubmitting] = useState(false);
@@ -97,6 +102,7 @@ export function WorkspacePage() {
   const [togglingNodeIDs, setTogglingNodeIDs] = useState<Record<string, boolean>>({});
   const [refreshingTunnelIDs, setRefreshingTunnelIDs] = useState<Record<string, boolean>>({});
   const refreshingTunnelIDsRef = useRef<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
   const groupSubmitLabel = groupSubmitting ? "提交中..." : editingGroup ? "保存修改" : "创建分组";
   const tunnelSubmitLabel = tunnelSubmitting ? "提交中..." : editingTunnel ? "保存修改" : "创建隧道";
   const [memberViewMode, setMemberViewMode] = usePersistedViewMode("simplepool.workspace.members.view_mode", "grid");
@@ -359,17 +365,8 @@ export function WorkspacePage() {
     }
   }
 
-  async function removeGroup(item: GroupView) {
-    if (!window.confirm(`确认删除分组 ${item.name}？`)) {
-      return;
-    }
-    try {
-      await run((token) => api.groups.remove(token, item.id));
-      toast.success("分组已删除");
-      await loadWorkspace(selectedGroupID === item.id ? null : selectedGroupID);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "删除分组失败");
-    }
+  function requestRemoveGroup(item: GroupView) {
+    setDeleteTarget({ kind: "group", item });
   }
 
   function openCreateTunnel() {
@@ -506,21 +503,38 @@ export function WorkspacePage() {
     }
   }, [beginTunnelRefresh, endTunnelRefresh, metrics, run]);
 
-  const removeTunnel = useCallback(async (item: TunnelView) => {
-    if (!window.confirm(`确认删除隧道 ${item.name}？运行时目录也会一起清理`)) {
+  const requestRemoveTunnel = useCallback((item: TunnelView) => {
+    setDeleteTarget({ kind: "tunnel", item });
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    const target = deleteTarget;
+    if (!target) {
       return;
     }
+    setDeleting(true);
     try {
-      await run((token) => api.tunnels.remove(token, item.id));
-      setTunnels((current) => current.filter((currentItem) => currentItem.id !== item.id));
-      if (item.status === "running") {
-        metrics.reconcileActiveTunnel(item, { status: "stopped" });
+      if (target.kind === "group") {
+        await run((token) => api.groups.remove(token, target.item.id));
+        toast.success("分组已删除");
+        setDeleteTarget(null);
+        await loadWorkspace(selectedGroupID === target.item.id ? null : selectedGroupID);
+        return;
       }
+
+      await run((token) => api.tunnels.remove(token, target.item.id));
+      setTunnels((current) => current.filter((currentItem) => currentItem.id !== target.item.id));
+      if (target.item.status === "running") {
+        metrics.reconcileActiveTunnel(target.item, { status: "stopped" });
+      }
+      setDeleteTarget(null);
       toast.success("隧道已删除");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "删除隧道失败");
+      toast.error(error instanceof Error ? error.message : target.kind === "group" ? "删除分组失败" : "删除隧道失败");
+    } finally {
+      setDeleting(false);
     }
-  }, [metrics, run]);
+  }, [deleteTarget, metrics, run, selectedGroupID]);
 
   const handleSelectTunnel = useCallback((tunnelID: string) => {
     setSelectedTunnelID(tunnelID);
@@ -537,8 +551,8 @@ export function WorkspacePage() {
 
   const handleDeleteTunnel = useCallback((item: TunnelView) => {
     setSelectedTunnelID(item.id);
-    void removeTunnel(item);
-  }, [removeTunnel]);
+    requestRemoveTunnel(item);
+  }, [requestRemoveTunnel]);
 
   function currentTunnelNodeLabel(item: TunnelView) {
     if (!item.current_node_id) {
@@ -676,7 +690,7 @@ export function WorkspacePage() {
                     <IconButton label="编辑分组" onClick={() => openEditGroup(selectedGroup)} variant="secondary">
                       <SquarePen className="h-4 w-4" />
                     </IconButton>
-                    <IconButton label="删除分组" onClick={() => void removeGroup(selectedGroup)} variant="danger">
+                    <IconButton label="删除分组" onClick={() => requestRemoveGroup(selectedGroup)} variant="danger">
                       <Trash2 className="h-4 w-4" />
                     </IconButton>
                   </div>
@@ -716,6 +730,25 @@ export function WorkspacePage() {
           </Card>
         </div>
       </div>
+
+      <DeleteConfirmDialog
+        busy={deleting}
+        description={
+          deleteTarget?.kind === "group"
+            ? `分组 ${deleteTarget.item.name} 删除后会立即从工作区移除。`
+            : deleteTarget
+              ? "运行时目录也会一起清理。"
+              : ""
+        }
+        onConfirm={() => void confirmDelete()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null);
+          }
+        }}
+        open={Boolean(deleteTarget)}
+        title={deleteTarget?.kind === "group" ? "确认删除分组" : "确认删除隧道"}
+      />
 
       <Dialog onOpenChange={setShowGroupForm} open={showGroupForm}>
         <DialogContent>
