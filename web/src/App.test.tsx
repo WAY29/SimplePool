@@ -24,6 +24,16 @@ function renderApp() {
 type FetchMockOptions = {
   nodes?: Array<Record<string, unknown>>;
   subscriptions?: Array<Record<string, unknown>>;
+  subscriptionRefreshResults?: Record<
+    string,
+    {
+      upserted_nodes: Array<Record<string, unknown>>;
+      deleted_node_ids?: string[];
+      updated_at?: string;
+      last_refresh_at?: string;
+      last_error?: string;
+    }
+  >;
   groups?: Array<Record<string, unknown>>;
   groupMembers?: Record<string, Array<Record<string, unknown>>>;
   tunnels?: Array<Record<string, unknown>>;
@@ -53,9 +63,25 @@ function defaultNodes() {
   ];
 }
 
+function upsertNodes(
+  current: Array<Record<string, unknown>>,
+  incoming: Array<Record<string, unknown>>,
+) {
+  const next = [...current];
+  incoming.forEach((item) => {
+    const index = next.findIndex((currentItem) => currentItem.id === item.id);
+    if (index >= 0) {
+      next[index] = item;
+      return;
+    }
+    next.unshift(item);
+  });
+  return next;
+}
+
 function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
   let nodes = structuredClone(options.nodes ?? defaultNodes());
-  const subscriptions = options.subscriptions ?? [
+  let subscriptions = structuredClone(options.subscriptions ?? [
     {
       id: "subscription-1",
       name: "赔钱",
@@ -67,7 +93,7 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
       created_at: "2026-03-26T09:07:00Z",
       updated_at: "2026-03-26T09:07:00Z",
     },
-  ];
+  ]);
   const groups = options.groups ?? [
     {
       id: "group-1",
@@ -116,6 +142,7 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
   ];
   const probeDelays = options.probeDelays ?? {};
   const probeResults = options.probeResults ?? {};
+  const subscriptionRefreshResults = options.subscriptionRefreshResults ?? {};
 
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -223,8 +250,80 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
     if (url.endsWith("/api/tunnels")) {
       return jsonResponse(200, tunnels);
     }
-    if (url.endsWith("/api/subscriptions")) {
+    if (url.endsWith("/api/subscriptions") && (init?.method === undefined || init.method === "GET")) {
       return jsonResponse(200, subscriptions);
+    }
+    if (url.endsWith("/api/subscriptions") && init?.method === "POST") {
+      const payload = init.body ? JSON.parse(String(init.body)) as { name: string; url: string } : { name: "", url: "" };
+      const created = {
+        id: `subscription-${subscriptions.length + 1}`,
+        name: payload.name,
+        fetch_fingerprint: `fingerprint-${subscriptions.length + 1}`,
+        enabled: true,
+        last_refresh_at: null,
+        last_error: "",
+        has_url: Boolean(payload.url),
+        created_at: "2026-03-26T10:07:00Z",
+        updated_at: "2026-03-26T10:07:00Z",
+      };
+      subscriptions = [created, ...subscriptions];
+      return jsonResponse(200, created);
+    }
+    const subscriptionRefreshMatch = url.match(/\/api\/subscriptions\/([^/]+)\/refresh$/);
+    if (subscriptionRefreshMatch && init?.method === "POST") {
+      const subscriptionID = subscriptionRefreshMatch[1];
+      const refreshPayload = subscriptionRefreshResults[subscriptionID] ?? {
+        upserted_nodes: [],
+      };
+      const upsertedNodes = structuredClone(refreshPayload.upserted_nodes);
+      const deletedNodeIDs = refreshPayload.deleted_node_ids ?? [];
+      nodes = upsertNodes(
+        nodes.filter((item) => !deletedNodeIDs.includes(String(item.id))),
+        upsertedNodes,
+      );
+      subscriptions = subscriptions.map((item) =>
+        item.id === subscriptionID
+          ? {
+              ...item,
+              last_refresh_at: refreshPayload.last_refresh_at ?? "2026-03-26T10:08:00Z",
+              updated_at: refreshPayload.updated_at ?? "2026-03-26T10:08:00Z",
+              last_error: refreshPayload.last_error ?? "",
+            }
+          : item,
+      );
+      return jsonResponse(200, {
+        source_id: subscriptionID,
+        upserted_nodes: upsertedNodes,
+        deleted_count: deletedNodeIDs.length,
+      });
+    }
+    const subscriptionMatch = url.match(/\/api\/subscriptions\/([^/]+)$/);
+    if (subscriptionMatch && init?.method === "PUT") {
+      const subscriptionID = subscriptionMatch[1];
+      const payload = init.body
+        ? JSON.parse(String(init.body)) as { name: string; url: string; enabled: boolean }
+        : { name: "", url: "", enabled: true };
+      let updatedSubscription: Record<string, unknown> | undefined;
+      subscriptions = subscriptions.map((item) => {
+        if (item.id !== subscriptionID) {
+          return item;
+        }
+        updatedSubscription = {
+          ...item,
+          name: payload.name,
+          enabled: payload.enabled,
+          has_url: Boolean(payload.url),
+          updated_at: "2026-03-26T10:09:00Z",
+        };
+        return updatedSubscription;
+      });
+      return jsonResponse(200, updatedSubscription ?? { id: subscriptionID });
+    }
+    if (subscriptionMatch && init?.method === "DELETE") {
+      const subscriptionID = subscriptionMatch[1];
+      subscriptions = subscriptions.filter((item) => item.id !== subscriptionID);
+      nodes = nodes.filter((item) => item.subscription_source_id !== subscriptionID);
+      return new Response(null, { status: 204 });
     }
     if (url.includes("/api/tunnels/") && url.includes("/events")) {
       return jsonResponse(200, []);
@@ -387,15 +486,17 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "节点组" }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("link", { name: "订阅" }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("link", { name: "订阅" })).not.toBeInTheDocument();
     expect(screen.getByText("SimplePool")).toBeInTheDocument();
     expect(screen.queryByText("Transport JSON")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "查看详情" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "新建节点" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加订阅" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入节点" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "探测" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "网格视图" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "列表视图" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "筛选 ALL" })).toBeInTheDocument();
   });
 
   it("旧工作区路由现在显示不存在页面", async () => {
@@ -408,37 +509,63 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "页面不存在" })).toBeInTheDocument();
   });
 
-  it("订阅页隐藏刷新指纹并重排操作按钮", async () => {
+  it("旧订阅路由现在显示不存在页面", async () => {
     window.history.pushState({}, "", "/subscriptions");
     window.localStorage.setItem("simplepool.session_token", "token-1");
     installAuthenticatedFetchMock();
 
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "订阅源列表" })).toBeInTheDocument();
-    expect(screen.queryByText("刷新指纹")).not.toBeInTheDocument();
-    expect(screen.queryByText("URL 存储")).not.toBeInTheDocument();
-    expect(screen.queryByText("字段")).not.toBeInTheDocument();
-    expect(screen.queryByText("最近状态正常")).not.toBeInTheDocument();
-    expect(screen.queryByText("最近一次刷新结果")).not.toBeInTheDocument();
-    expect(screen.queryByText("立即刷新")).not.toBeInTheDocument();
-    expect(screen.queryByText("编辑")).not.toBeInTheDocument();
-    expect(screen.queryByText("删除")).not.toBeInTheDocument();
-    const refreshButton = await screen.findByRole("button", { name: "立即刷新" });
-    const editButton = screen.getByRole("button", { name: "编辑" });
-    const deleteButton = screen.getByRole("button", { name: "删除" });
-    expect(refreshButton).toHaveAttribute("title", "立即刷新");
-    expect(editButton).toHaveAttribute("title", "编辑");
-    expect(deleteButton).toHaveAttribute("title", "删除");
-    expect(screen.getByText("创建时间")).toBeInTheDocument();
-    expect(screen.getByText("更新时间")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "页面不存在" })).toBeInTheDocument();
   });
 
-  it("订阅详情展示订阅节点并将未探测节点计入 Available Nodes", async () => {
-    window.history.pushState({}, "", "/subscriptions");
+  it("节点页支持按订阅 Tag 筛选并显示时间 tooltip", async () => {
+    window.history.pushState({}, "", "/nodes");
     window.localStorage.setItem("simplepool.session_token", "token-1");
     installAuthenticatedFetchMock({
+      subscriptions: [
+        {
+          id: "subscription-1",
+          name: "赔钱",
+          fetch_fingerprint: "fp-1",
+          enabled: true,
+          last_refresh_at: "2026-03-26T10:06:00Z",
+          last_error: "",
+          has_url: true,
+          created_at: "2026-03-26T09:07:00Z",
+          updated_at: "2026-03-26T09:08:00Z",
+        },
+        {
+          id: "subscription-2",
+          name: "稳健",
+          fetch_fingerprint: "fp-2",
+          enabled: true,
+          last_refresh_at: "2026-03-26T10:06:00Z",
+          last_error: "",
+          has_url: true,
+          created_at: "2026-03-26T09:09:00Z",
+          updated_at: "2026-03-26T09:10:00Z",
+        },
+      ],
       nodes: [
+        {
+          id: "manual-1",
+          name: "手动-A1",
+          source_kind: "manual",
+          protocol: "trojan",
+          server: "192.168.1.100",
+          server_port: 443,
+          transport_json: "{}",
+          tls_json: "{}",
+          raw_payload_json: "{}",
+          enabled: true,
+          last_latency_ms: 30,
+          last_status: "healthy",
+          last_checked_at: "2026-03-26T10:04:00Z",
+          has_credential: true,
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
         {
           id: "node-1",
           name: "香港-A1",
@@ -481,7 +608,7 @@ describe("App", () => {
           id: "node-3",
           name: "美国-C3",
           source_kind: "subscription",
-          subscription_source_id: "subscription-1",
+          subscription_source_id: "subscription-2",
           protocol: "trojan",
           server: "192.168.1.103",
           server_port: 443,
@@ -489,27 +616,9 @@ describe("App", () => {
           tls_json: "{}",
           raw_payload_json: "{}",
           enabled: true,
-          last_latency_ms: null,
-          last_status: "unreachable",
+          last_latency_ms: 52,
+          last_status: "healthy",
           last_checked_at: "2026-03-26T10:01:00Z",
-          has_credential: true,
-          created_at: "2026-03-26T10:00:00Z",
-          updated_at: "2026-03-26T10:00:00Z",
-        },
-        {
-          id: "node-4",
-          name: "停用-D4",
-          source_kind: "manual",
-          protocol: "trojan",
-          server: "192.168.1.104",
-          server_port: 443,
-          transport_json: "{}",
-          tls_json: "{}",
-          raw_payload_json: "{}",
-          enabled: false,
-          last_latency_ms: null,
-          last_status: "unknown",
-          last_checked_at: null,
           has_credential: true,
           created_at: "2026-03-26T10:00:00Z",
           updated_at: "2026-03-26T10:00:00Z",
@@ -519,20 +628,224 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "订阅源列表" })).toBeInTheDocument();
-    expect(await screen.findByText("订阅节点")).toBeInTheDocument();
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
+    expect(screen.getByText("手动-A1")).toBeInTheDocument();
     expect(screen.getByText("香港-A1")).toBeInTheDocument();
     expect(screen.getByText("日本-B2")).toBeInTheDocument();
     expect(screen.getByText("美国-C3")).toBeInTheDocument();
-    expect(screen.queryByText("停用-D4")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "探测" })).toBeInTheDocument();
-    expect(screen.getByText("Available Nodes:").parentElement).toHaveTextContent("2");
+
+    const subscriptionFilter = screen.getByRole("button", { name: "筛选 赔钱" });
+    expect(subscriptionFilter).toHaveAttribute("title", expect.stringContaining("创建时间:"));
+    expect(subscriptionFilter).toHaveAttribute("title", expect.stringContaining("更新时间:"));
+
+    await user.click(subscriptionFilter);
+
+    await waitFor(() => {
+      expect(screen.queryByText("手动-A1")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("香港-A1")).toBeInTheDocument();
+    expect(screen.getByText("日本-B2")).toBeInTheDocument();
+    expect(screen.queryByText("美国-C3")).not.toBeInTheDocument();
   });
 
-  it("订阅详情批量探测会实时回填延迟并跳过禁用节点", async () => {
-    window.history.pushState({}, "", "/subscriptions");
+  it("节点页刷新当前订阅时保持当前筛选并更新节点数据", async () => {
+    window.history.pushState({}, "", "/nodes");
     window.localStorage.setItem("simplepool.session_token", "token-1");
     const fetchMock = installAuthenticatedFetchMock({
+      subscriptions: [
+        {
+          id: "subscription-1",
+          name: "赔钱",
+          fetch_fingerprint: "fp-1",
+          enabled: true,
+          last_refresh_at: "2026-03-26T10:06:00Z",
+          last_error: "",
+          has_url: true,
+          created_at: "2026-03-26T09:07:00Z",
+          updated_at: "2026-03-26T09:08:00Z",
+        },
+        {
+          id: "subscription-2",
+          name: "稳健",
+          fetch_fingerprint: "fp-2",
+          enabled: true,
+          last_refresh_at: "2026-03-26T10:06:00Z",
+          last_error: "",
+          has_url: true,
+          created_at: "2026-03-26T09:09:00Z",
+          updated_at: "2026-03-26T09:10:00Z",
+        },
+      ],
+      nodes: [
+        {
+          id: "node-1",
+          name: "香港-A1",
+          source_kind: "subscription",
+          subscription_source_id: "subscription-1",
+          protocol: "trojan",
+          server: "192.168.1.103",
+          server_port: 443,
+          transport_json: "{}",
+          tls_json: "{}",
+          raw_payload_json: "{}",
+          enabled: true,
+          last_latency_ms: 42,
+          last_status: "healthy",
+          last_checked_at: "2026-03-26T10:01:00Z",
+          has_credential: true,
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
+        {
+          id: "node-2",
+          name: "日本-B2",
+          source_kind: "subscription",
+          subscription_source_id: "subscription-2",
+          protocol: "vmess",
+          server: "192.168.1.102",
+          server_port: 443,
+          transport_json: "{}",
+          tls_json: "{}",
+          raw_payload_json: "{}",
+          enabled: true,
+          last_latency_ms: 55,
+          last_status: "healthy",
+          last_checked_at: "2026-03-26T10:04:00Z",
+          has_credential: true,
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
+      ],
+      subscriptionRefreshResults: {
+        "subscription-1": {
+          upserted_nodes: [
+            {
+              id: "node-3",
+              name: "美国-C3",
+              source_kind: "subscription",
+              subscription_source_id: "subscription-1",
+              protocol: "trojan",
+              server: "192.168.1.103",
+              server_port: 443,
+              transport_json: "{}",
+              tls_json: "{}",
+              raw_payload_json: "{}",
+              enabled: true,
+              last_latency_ms: 61,
+              last_status: "healthy",
+              last_checked_at: "2026-03-26T10:08:00Z",
+              has_credential: true,
+              created_at: "2026-03-26T10:08:00Z",
+              updated_at: "2026-03-26T10:08:00Z",
+            },
+          ],
+        },
+      },
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
+
+    expect(screen.queryByRole("button", { name: "刷新 赔钱" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "筛选 赔钱" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("香港-A1")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("日本-B2")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "刷新订阅" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          ([input, init]) => String(input).endsWith("/api/subscriptions/subscription-1/refresh") && init?.method === "POST",
+        ),
+      ).toBe(true);
+    });
+    expect(screen.getByText("香港-A1")).toBeInTheDocument();
+    expect(screen.getByText("美国-C3")).toBeInTheDocument();
+    expect(screen.queryByText("日本-B2")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "筛选 ALL" }));
+    expect(await screen.findByText("美国-C3")).toBeInTheDocument();
+  });
+
+  it("节点页支持新增编辑删除订阅", async () => {
+    window.history.pushState({}, "", "/nodes");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    installAuthenticatedFetchMock({
+      subscriptions: [
+        {
+          id: "subscription-1",
+          name: "原始订阅",
+          fetch_fingerprint: "fp-1",
+          enabled: true,
+          last_refresh_at: null,
+          last_error: "",
+          has_url: true,
+          created_at: "2026-03-26T09:07:00Z",
+          updated_at: "2026-03-26T09:07:00Z",
+        },
+      ],
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderApp();
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "添加订阅" }));
+    await user.type(screen.getByLabelText("名称"), "新增订阅");
+    await user.type(screen.getByLabelText("订阅 URL"), "https://example.com/sub.txt");
+    await user.click(screen.getByRole("button", { name: "创建订阅" }));
+
+    expect(await screen.findByRole("button", { name: "筛选 新增订阅" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "筛选 新增订阅" }));
+    await user.click(screen.getByRole("button", { name: "编辑订阅" }));
+
+    const nameInput = screen.getByLabelText("名称");
+    const urlInput = screen.getByLabelText("订阅 URL");
+    await user.clear(nameInput);
+    await user.type(nameInput, "新增订阅-改");
+    await user.clear(urlInput);
+    await user.type(urlInput, "https://example.com/sub-new.txt");
+    await user.click(screen.getByRole("button", { name: "保存订阅" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "筛选 新增订阅-改" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "删除订阅" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "筛选 新增订阅-改" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("节点页批量探测仅作用于当前订阅筛选并跳过禁用节点", async () => {
+    window.history.pushState({}, "", "/nodes");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      subscriptions: [
+        {
+          id: "subscription-1",
+          name: "赔钱",
+          fetch_fingerprint: "fp-1",
+          enabled: true,
+          last_refresh_at: null,
+          last_error: "",
+          has_url: true,
+          created_at: "2026-03-26T09:07:00Z",
+          updated_at: "2026-03-26T09:07:00Z",
+        },
+      ],
       nodes: [
         {
           id: "node-1",
@@ -591,6 +904,24 @@ describe("App", () => {
           created_at: "2026-03-26T10:00:00Z",
           updated_at: "2026-03-26T10:00:00Z",
         },
+        {
+          id: "node-4",
+          name: "手动-D4",
+          source_kind: "manual",
+          protocol: "trojan",
+          server: "192.168.1.104",
+          server_port: 443,
+          transport_json: "{}",
+          tls_json: "{}",
+          raw_payload_json: "{}",
+          enabled: true,
+          last_latency_ms: null,
+          last_status: "unknown",
+          last_checked_at: null,
+          has_credential: true,
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
       ],
       probeDelays: {
         "node-1": 60,
@@ -611,8 +942,9 @@ describe("App", () => {
     renderApp();
 
     const user = userEvent.setup();
-    expect(await screen.findByText("订阅节点")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
 
+    await user.click(screen.getByRole("button", { name: "筛选 赔钱" }));
     await user.click(screen.getByRole("button", { name: "探测" }));
 
     expect(screen.getAllByText("探测中")).toHaveLength(2);
@@ -634,10 +966,7 @@ describe("App", () => {
       .filter((url) => url.includes("/api/nodes/") && url.endsWith("/probe"));
     expect(probeURLs).toHaveLength(2);
     expect(probeURLs.some((url) => url.includes("/api/nodes/node-3/probe"))).toBe(false);
-    const nodeListCalls = fetchMock.mock.calls.filter(
-      ([input, init]) => String(input).endsWith("/api/nodes") && (!init?.method || init.method === "GET"),
-    );
-    expect(nodeListCalls).toHaveLength(2);
+    expect(probeURLs.some((url) => url.includes("/api/nodes/node-4/probe"))).toBe(false);
   });
 
   it("节点卡片支持单节点延迟测试按钮", async () => {
