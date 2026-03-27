@@ -15,6 +15,16 @@ type loginRequest struct {
 
 func registerAuthRoutes(engine *gin.Engine, service *auth.Service) {
 	group := engine.Group("/api/auth")
+	// @Summary 管理员登录
+	// @Tags auth
+	// @Accept json
+	// @Produce json
+	// @Param request body loginRequest true "登录请求"
+	// @Success 200 {object} authLoginResponse
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 500 {object} errorResponse
+	// @Router /api/auth/login [post]
 	group.POST("/login", func(c *gin.Context) {
 		var request loginRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -65,6 +75,13 @@ func registerAuthRoutes(engine *gin.Engine, service *auth.Service) {
 
 	protected := group.Group("")
 	protected.Use(auth.Middleware(service))
+	// @Summary 获取当前会话
+	// @Tags auth
+	// @Produce json
+	// @Security BearerAuth
+	// @Success 200 {object} authMeResponse
+	// @Failure 401 {object} errorResponse
+	// @Router /api/auth/me [get]
 	protected.GET("/me", func(c *gin.Context) {
 		current, ok := auth.Current(c)
 		if !ok {
@@ -90,6 +107,13 @@ func registerAuthRoutes(engine *gin.Engine, service *auth.Service) {
 			},
 		})
 	})
+	// @Summary 登出当前会话
+	// @Tags auth
+	// @Security BearerAuth
+	// @Success 204
+	// @Failure 401 {object} errorResponse
+	// @Failure 500 {object} errorResponse
+	// @Router /api/auth/logout [post]
 	protected.POST("/logout", func(c *gin.Context) {
 		current, ok := auth.Current(c)
 		if !ok {

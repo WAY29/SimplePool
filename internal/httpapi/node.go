@@ -38,6 +38,14 @@ type nodeEnabledRequest struct {
 func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *node.Service) {
 	group := engine.Group("/api/nodes")
 	group.Use(auth.Middleware(authService))
+	// @Summary 列出节点
+	// @Tags nodes
+	// @Produce json
+	// @Security BearerAuth
+	// @Success 200 {array} node.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 500 {object} errorResponse
+	// @Router /api/nodes [get]
 	group.GET("", func(c *gin.Context) {
 		items, err := service.List(c.Request.Context())
 		if err != nil {
@@ -46,6 +54,17 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 		}
 		c.JSON(http.StatusOK, items)
 	})
+	// @Summary 创建手动节点
+	// @Tags nodes
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param request body nodeUpsertRequest true "节点请求"
+	// @Success 201 {object} node.View
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 500 {object} errorResponse
+	// @Router /api/nodes [post]
 	group.POST("", func(c *gin.Context) {
 		var request nodeUpsertRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -68,6 +87,15 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 		}
 		c.JSON(http.StatusCreated, item)
 	})
+	// @Summary 获取节点
+	// @Tags nodes
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "节点 ID"
+	// @Success 200 {object} node.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/nodes/{id} [get]
 	group.GET("/:id", func(c *gin.Context) {
 		item, err := service.Get(c.Request.Context(), c.Param("id"))
 		if err != nil {
@@ -76,6 +104,18 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 更新节点
+	// @Tags nodes
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "节点 ID"
+	// @Param request body nodeUpsertRequest true "节点请求"
+	// @Success 200 {object} node.View
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/nodes/{id} [put]
 	group.PUT("/:id", func(c *gin.Context) {
 		var request nodeUpsertRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -99,6 +139,18 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 设置节点启用状态
+	// @Tags nodes
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "节点 ID"
+	// @Param request body nodeEnabledRequest true "启用状态"
+	// @Success 200 {object} node.View
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/nodes/{id}/enabled [put]
 	group.PUT("/:id/enabled", func(c *gin.Context) {
 		var request nodeEnabledRequest
 		if err := c.ShouldBindJSON(&request); err != nil || request.Enabled == nil {
@@ -112,6 +164,14 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 删除节点
+	// @Tags nodes
+	// @Security BearerAuth
+	// @Param id path string true "节点 ID"
+	// @Success 204
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/nodes/{id} [delete]
 	group.DELETE("/:id", func(c *gin.Context) {
 		if err := service.Delete(c.Request.Context(), c.Param("id")); err != nil {
 			handleNodeError(c, err)
@@ -119,6 +179,17 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 		}
 		c.Status(http.StatusNoContent)
 	})
+	// @Summary 导入节点
+	// @Tags nodes
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param request body nodeImportRequest true "导入内容"
+	// @Success 201 {array} node.View
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 500 {object} errorResponse
+	// @Router /api/nodes/import [post]
 	group.POST("/import", func(c *gin.Context) {
 		var request nodeImportRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -132,6 +203,18 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 		}
 		c.JSON(http.StatusCreated, items)
 	})
+	// @Summary 探测单个节点
+	// @Tags nodes
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "节点 ID"
+	// @Param request body nodeProbeRequest false "探测参数"
+	// @Success 200 {object} node.ProbeResult
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Failure 503 {object} errorResponse
+	// @Router /api/nodes/{id}/probe [post]
 	group.POST("/:id/probe", func(c *gin.Context) {
 		var request nodeProbeRequest
 		_ = c.ShouldBindJSON(&request)
@@ -142,6 +225,17 @@ func registerNodeRoutes(engine *gin.Engine, authService *auth.Service, service *
 		}
 		c.JSON(http.StatusOK, result)
 	})
+	// @Summary 批量探测节点
+	// @Tags nodes
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param request body nodeProbeRequest true "批量探测参数"
+	// @Success 200 {array} node.ProbeBatchResult
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 503 {object} errorResponse
+	// @Router /api/nodes/probe [post]
 	group.POST("/probe", func(c *gin.Context) {
 		var request nodeProbeRequest
 		if err := c.ShouldBindJSON(&request); err != nil {

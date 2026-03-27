@@ -144,6 +144,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 
 	engine := httpapi.NewRouter(httpapi.Options{
 		AuthService:         authService,
+		Debug:               cfg.Debug,
 		GroupService:        groupService,
 		NodeService:         nodeService,
 		SubscriptionService: subscriptionService,

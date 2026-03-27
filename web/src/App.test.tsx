@@ -1186,6 +1186,136 @@ describe("App", () => {
     expect(nodeListCalls).toHaveLength(2);
   });
 
+  it("节点组页批量探测仅作用于当前分组成员并跳过禁用节点", async () => {
+    window.history.pushState({}, "", "/");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      groups: [
+        {
+          id: "group-1",
+          name: "香港组",
+          filter_regex: "HK",
+          description: "香港节点",
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
+        {
+          id: "group-2",
+          name: "日本组",
+          filter_regex: "JP",
+          description: "日本节点",
+          created_at: "2026-03-26T10:00:00Z",
+          updated_at: "2026-03-26T10:00:00Z",
+        },
+      ],
+      groupMembers: {
+        "group-1": [
+          {
+            id: "node-1",
+            name: "香港-A1",
+            source_kind: "manual",
+            protocol: "trojan",
+            server: "192.168.1.101",
+            server_port: 443,
+            enabled: true,
+            last_latency_ms: null,
+            last_status: "unknown",
+            last_checked_at: null,
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+          {
+            id: "node-2",
+            name: "香港-B2",
+            source_kind: "manual",
+            protocol: "vmess",
+            server: "192.168.1.102",
+            server_port: 443,
+            enabled: true,
+            last_latency_ms: null,
+            last_status: "unknown",
+            last_checked_at: null,
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+          {
+            id: "node-3",
+            name: "停用-C3",
+            source_kind: "manual",
+            protocol: "trojan",
+            server: "192.168.1.103",
+            server_port: 443,
+            enabled: false,
+            last_latency_ms: null,
+            last_status: "unknown",
+            last_checked_at: null,
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+        ],
+        "group-2": [
+          {
+            id: "node-4",
+            name: "日本-D4",
+            source_kind: "manual",
+            protocol: "trojan",
+            server: "192.168.1.104",
+            server_port: 443,
+            enabled: true,
+            last_latency_ms: null,
+            last_status: "unknown",
+            last_checked_at: null,
+            created_at: "2026-03-26T10:00:00Z",
+            updated_at: "2026-03-26T10:00:00Z",
+          },
+        ],
+      },
+      probeDelays: {
+        "node-1": 60,
+        "node-2": 10,
+      },
+      probeResults: {
+        "node-1": {
+          success: true,
+          latency_ms: 45,
+        },
+        "node-2": {
+          success: true,
+          latency_ms: 88,
+        },
+      },
+      tunnels: [],
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点组" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "批量探测组节点" }));
+
+    expect(screen.getAllByText("探测中")).toHaveLength(2);
+
+    await waitFor(() => {
+      expect(screen.getByText("88 ms")).toBeInTheDocument();
+    });
+    expect(screen.getByText("探测中")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByText("45 ms")).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("探测中")).not.toBeInTheDocument();
+    });
+
+    const probeURLs = fetchMock.mock.calls
+      .map(([input]) => String(input))
+      .filter((url) => url.includes("/api/nodes/") && url.endsWith("/probe"));
+    expect(probeURLs).toHaveLength(2);
+    expect(probeURLs.some((url) => url.includes("/api/nodes/node-3/probe"))).toBe(false);
+    expect(probeURLs.some((url) => url.includes("/api/nodes/node-4/probe"))).toBe(false);
+  });
+
   it("节点组页支持直接探测组成员", async () => {
     window.history.pushState({}, "", "/");
     window.localStorage.setItem("simplepool.session_token", "token-1");

@@ -19,6 +19,7 @@ const (
 )
 
 type Config struct {
+	Debug    bool
 	HTTPAddr string
 	LogLevel string
 	Paths    Paths
@@ -77,6 +78,7 @@ func Load() (Config, error) {
 	}
 
 	return Config{
+		Debug:    parseBoolEnv("SIMPLEPOOL_DEBUG"),
 		HTTPAddr: envOrDefault("SIMPLEPOOL_HTTP_ADDR", defaultHTTPAddr),
 		LogLevel: envOrDefault("SIMPLEPOOL_LOG_LEVEL", "info"),
 		Paths: Paths{
@@ -140,6 +142,16 @@ func envOrDefault(key, fallback string) string {
 	}
 
 	return value
+}
+
+func parseBoolEnv(key string) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolvePath(path string) (string, error) {

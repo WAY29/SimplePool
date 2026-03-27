@@ -98,3 +98,25 @@ func TestLoadConfigUsesConfigFile(t *testing.T) {
 		t.Fatalf("len(MasterKey) = %d, want 32", got)
 	}
 }
+
+func TestLoadConfigEnablesDebugFromCLIFlag(t *testing.T) {
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "simplepool.env")
+	masterKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+
+	content := []byte("" +
+		"SIMPLEPOOL_ADMIN_PASSWORD=super-secret\n" +
+		"SIMPLEPOOL_MASTER_KEY=" + masterKey + "\n")
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := loadConfig(options{ConfigPath: configPath, Debug: true})
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+
+	if !cfg.Debug {
+		t.Fatal("Debug = false, want true")
+	}
+}

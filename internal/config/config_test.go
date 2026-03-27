@@ -54,6 +54,21 @@ func TestLoadDefaultsAndDerivedPaths(t *testing.T) {
 	}
 }
 
+func TestLoadParsesDebugFlag(t *testing.T) {
+	t.Setenv("SIMPLEPOOL_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	t.Setenv("SIMPLEPOOL_ADMIN_PASSWORD", "super-secret")
+	t.Setenv("SIMPLEPOOL_DEBUG", "true")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if !cfg.Debug {
+		t.Fatal("Debug = false, want true")
+	}
+}
+
 func TestLoadMasterKeyFromFile(t *testing.T) {
 	root := t.TempDir()
 	keyFile := filepath.Join(root, "master.key")

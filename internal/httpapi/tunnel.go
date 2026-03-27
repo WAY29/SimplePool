@@ -22,6 +22,14 @@ type tunnelUpsertRequest struct {
 func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service *tunnel.Service) {
 	group := engine.Group("/api/tunnels")
 	group.Use(auth.Middleware(authService))
+	// @Summary 列出隧道
+	// @Tags tunnels
+	// @Produce json
+	// @Security BearerAuth
+	// @Success 200 {array} tunnel.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 500 {object} errorResponse
+	// @Router /api/tunnels [get]
 	group.GET("", func(c *gin.Context) {
 		items, err := service.List(c.Request.Context())
 		if err != nil {
@@ -30,6 +38,18 @@ func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service
 		}
 		c.JSON(http.StatusOK, items)
 	})
+	// @Summary 创建隧道
+	// @Tags tunnels
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param request body tunnelUpsertRequest true "隧道请求"
+	// @Success 201 {object} tunnel.View
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Failure 409 {object} errorResponse
+	// @Router /api/tunnels [post]
 	group.POST("", func(c *gin.Context) {
 		var request tunnelUpsertRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -49,6 +69,15 @@ func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service
 		}
 		c.JSON(http.StatusCreated, item)
 	})
+	// @Summary 获取隧道
+	// @Tags tunnels
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "隧道 ID"
+	// @Success 200 {object} tunnel.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/tunnels/{id} [get]
 	group.GET("/:id", func(c *gin.Context) {
 		item, err := service.Get(c.Request.Context(), c.Param("id"))
 		if err != nil {
@@ -57,6 +86,19 @@ func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 更新隧道
+	// @Tags tunnels
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "隧道 ID"
+	// @Param request body tunnelUpsertRequest true "隧道请求"
+	// @Success 200 {object} tunnel.View
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Failure 409 {object} errorResponse
+	// @Router /api/tunnels/{id} [put]
 	group.PUT("/:id", func(c *gin.Context) {
 		var request tunnelUpsertRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -76,6 +118,14 @@ func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 删除隧道
+	// @Tags tunnels
+	// @Security BearerAuth
+	// @Param id path string true "隧道 ID"
+	// @Success 204
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/tunnels/{id} [delete]
 	group.DELETE("/:id", func(c *gin.Context) {
 		if err := service.Delete(c.Request.Context(), c.Param("id")); err != nil {
 			handleTunnelError(c, err)
@@ -83,6 +133,16 @@ func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service
 		}
 		c.Status(http.StatusNoContent)
 	})
+	// @Summary 启动隧道
+	// @Tags tunnels
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "隧道 ID"
+	// @Success 200 {object} tunnel.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Failure 409 {object} errorResponse
+	// @Router /api/tunnels/{id}/start [post]
 	group.POST("/:id/start", func(c *gin.Context) {
 		item, err := service.Start(c.Request.Context(), c.Param("id"))
 		if err != nil {
@@ -91,6 +151,16 @@ func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 停止隧道
+	// @Tags tunnels
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "隧道 ID"
+	// @Success 200 {object} tunnel.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Failure 409 {object} errorResponse
+	// @Router /api/tunnels/{id}/stop [post]
 	group.POST("/:id/stop", func(c *gin.Context) {
 		item, err := service.Stop(c.Request.Context(), c.Param("id"))
 		if err != nil {
@@ -99,6 +169,16 @@ func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 刷新隧道
+	// @Tags tunnels
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "隧道 ID"
+	// @Success 200 {object} tunnel.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Failure 409 {object} errorResponse
+	// @Router /api/tunnels/{id}/refresh [post]
 	group.POST("/:id/refresh", func(c *gin.Context) {
 		item, err := service.Refresh(c.Request.Context(), c.Param("id"))
 		if err != nil {
@@ -107,6 +187,16 @@ func registerTunnelRoutes(engine *gin.Engine, authService *auth.Service, service
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 获取隧道事件
+	// @Tags tunnels
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "隧道 ID"
+	// @Param limit query int false "返回条数"
+	// @Success 200 {array} tunnel.EventView
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/tunnels/{id}/events [get]
 	group.GET("/:id/events", func(c *gin.Context) {
 		limit, _ := strconv.Atoi(c.Query("limit"))
 		items, err := service.ListEvents(c.Request.Context(), c.Param("id"), limit)

@@ -72,7 +72,12 @@ func loadConfig(opts options) (config.Config, error) {
 		return config.Config{}, err
 	}
 
-	return config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		return config.Config{}, err
+	}
+	cfg.Debug = cfg.Debug || opts.Debug
+	return cfg, nil
 }
 
 func parseArgs(args []string) (options, error) {

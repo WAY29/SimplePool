@@ -21,6 +21,14 @@ type groupUpsertRequest struct {
 func registerGroupRoutes(engine *gin.Engine, authService *auth.Service, service *group.Service) {
 	routerGroup := engine.Group("/api/groups")
 	routerGroup.Use(auth.Middleware(authService))
+	// @Summary 列出节点组
+	// @Tags groups
+	// @Produce json
+	// @Security BearerAuth
+	// @Success 200 {array} group.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 500 {object} errorResponse
+	// @Router /api/groups [get]
 	routerGroup.GET("", func(c *gin.Context) {
 		items, err := service.List(c.Request.Context())
 		if err != nil {
@@ -29,6 +37,16 @@ func registerGroupRoutes(engine *gin.Engine, authService *auth.Service, service 
 		}
 		c.JSON(http.StatusOK, items)
 	})
+	// @Summary 创建节点组
+	// @Tags groups
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param request body groupUpsertRequest true "节点组请求"
+	// @Success 201 {object} group.View
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Router /api/groups [post]
 	routerGroup.POST("", func(c *gin.Context) {
 		var request groupUpsertRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -46,6 +64,15 @@ func registerGroupRoutes(engine *gin.Engine, authService *auth.Service, service 
 		}
 		c.JSON(http.StatusCreated, item)
 	})
+	// @Summary 获取节点组
+	// @Tags groups
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "节点组 ID"
+	// @Success 200 {object} group.View
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/groups/{id} [get]
 	routerGroup.GET("/:id", func(c *gin.Context) {
 		item, err := service.Get(c.Request.Context(), c.Param("id"))
 		if err != nil {
@@ -54,6 +81,18 @@ func registerGroupRoutes(engine *gin.Engine, authService *auth.Service, service 
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 更新节点组
+	// @Tags groups
+	// @Accept json
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "节点组 ID"
+	// @Param request body groupUpsertRequest true "节点组请求"
+	// @Success 200 {object} group.View
+	// @Failure 400 {object} errorResponse
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/groups/{id} [put]
 	routerGroup.PUT("/:id", func(c *gin.Context) {
 		var request groupUpsertRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -71,6 +110,14 @@ func registerGroupRoutes(engine *gin.Engine, authService *auth.Service, service 
 		}
 		c.JSON(http.StatusOK, item)
 	})
+	// @Summary 删除节点组
+	// @Tags groups
+	// @Security BearerAuth
+	// @Param id path string true "节点组 ID"
+	// @Success 204
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/groups/{id} [delete]
 	routerGroup.DELETE("/:id", func(c *gin.Context) {
 		if err := service.Delete(c.Request.Context(), c.Param("id")); err != nil {
 			handleGroupError(c, err)
@@ -78,6 +125,15 @@ func registerGroupRoutes(engine *gin.Engine, authService *auth.Service, service 
 		}
 		c.Status(http.StatusNoContent)
 	})
+	// @Summary 列出组成员
+	// @Tags groups
+	// @Produce json
+	// @Security BearerAuth
+	// @Param id path string true "节点组 ID"
+	// @Success 200 {array} group.MemberView
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/groups/{id}/members [get]
 	routerGroup.GET("/:id/members", func(c *gin.Context) {
 		items, err := service.ListMembers(c.Request.Context(), c.Param("id"))
 		if err != nil {
@@ -86,6 +142,15 @@ func registerGroupRoutes(engine *gin.Engine, authService *auth.Service, service 
 		}
 		c.JSON(http.StatusOK, items)
 	})
+	// @Summary 订阅组成员更新流
+	// @Tags groups
+	// @Produce application/x-ndjson
+	// @Security BearerAuth
+	// @Param id path string true "节点组 ID"
+	// @Success 200 {string} string "NDJSON stream"
+	// @Failure 401 {object} errorResponse
+	// @Failure 404 {object} errorResponse
+	// @Router /api/groups/{id}/members/stream [get]
 	routerGroup.GET("/:id/members/stream", func(c *gin.Context) {
 		updates, unsubscribe, err := service.SubscribeMemberUpdates(c.Request.Context(), c.Param("id"))
 		if err != nil {

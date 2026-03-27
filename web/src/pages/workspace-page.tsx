@@ -5,6 +5,7 @@ import {
   LoaderCircle,
   Play,
   Plus,
+  Radar,
   RefreshCw,
   ShieldCheck,
   ShieldOff,
@@ -276,6 +277,56 @@ export function WorkspacePage() {
         return next;
       });
     }
+  }
+
+  async function probeBatchMembers() {
+    const candidates = members.filter((item) => item.enabled);
+    if (candidates.length === 0) {
+      return;
+    }
+    setProbingNodeIDs((current) => ({
+      ...current,
+      ...Object.fromEntries(candidates.map((item) => [item.id, true])),
+    }));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    const results: ProbeBatchResult[] = [];
+    await Promise.all(
+      candidates.map(async (item) => {
+        try {
+          const result = await run((token) => api.nodes.probe(token, item.id, true));
+          const batchResult = {
+            node_id: item.id,
+            ...result,
+          };
+          results.push(batchResult);
+          setProbeResults((current) => ({
+            ...current,
+            [item.id]: batchResult,
+          }));
+          applyProbeResult(item.id, batchResult);
+        } catch (error) {
+          const failedResult = {
+            node_id: item.id,
+            success: false,
+            test_url: "",
+            error_message: error instanceof Error ? error.message : "节点探测失败",
+            cached: false,
+          };
+          setProbeResults((current) => ({
+            ...current,
+            [item.id]: failedResult,
+          }));
+          applyProbeResult(item.id, failedResult);
+        } finally {
+          setProbingNodeIDs((current) => {
+            const next = { ...current };
+            delete next[item.id];
+            return next;
+          });
+        }
+      }),
+    );
+    toast.success(`批量探测完成，共 ${results.length} 个节点`);
   }
 
   async function toggleMemberEnabled(item: GroupMemberView) {
@@ -709,6 +760,14 @@ export function WorkspacePage() {
                       过滤正则 <span className="ml-2 font-medium text-white">{selectedGroup.filter_regex}</span>
                     </div>
                   ) : null}
+                  <IconButton
+                    disabled={memberLoading || members.every((item) => !item.enabled)}
+                    label="批量探测组节点"
+                    onClick={() => void probeBatchMembers()}
+                    variant="secondary"
+                  >
+                    <Radar className="h-4 w-4" />
+                  </IconButton>
                   <NodeViewModeSwitch mode={memberViewMode} onChange={setMemberViewMode} />
                 </div>
               </div>

@@ -19,27 +19,50 @@ import (
 
 type Options struct {
 	AuthService         *auth.Service
+	Debug               bool
 	GroupService        *group.Service
 	NodeService         *node.Service
 	SubscriptionService *subscription.Service
 	TunnelService       *tunnel.Service
 }
 
+// @title SimplePool API
+// @version 0.1.0
+// @description SimplePool 控制面 API。
+// @BasePath /
+// @schemes http https
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
 func NewRouter(options Options) *gin.Engine {
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
+	// @Summary 健康检查
+	// @Tags system
+	// @Produce json
+	// @Success 200 {object} healthResponse
+	// @Router /healthz [get]
 	engine.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status": "ok",
 		})
 	})
 
+	// @Summary 就绪检查
+	// @Tags system
+	// @Produce json
+	// @Success 200 {object} healthResponse
+	// @Router /readyz [get]
 	engine.GET("/readyz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status": "ready",
 		})
 	})
+
+	if options.Debug {
+		registerOpenAPIRoute(engine)
+	}
 
 	registerAuthRoutes(engine, options.AuthService)
 	if options.NodeService != nil {
@@ -101,6 +124,8 @@ func registerEmbeddedWebUI(engine *gin.Engine) {
 func isReservedAPIPath(requestPath string) bool {
 	return requestPath == "/api" ||
 		strings.HasPrefix(requestPath, "/api/") ||
+		requestPath == "/openapi.json" ||
+		strings.HasPrefix(requestPath, "/openapi.json/") ||
 		requestPath == "/healthz" ||
 		strings.HasPrefix(requestPath, "/healthz/") ||
 		requestPath == "/readyz" ||
