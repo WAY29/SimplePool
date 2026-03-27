@@ -15,10 +15,12 @@ import (
 
 	"github.com/WAY29/SimplePool/internal/app"
 	"github.com/WAY29/SimplePool/internal/config"
+	"github.com/gin-gonic/gin"
 )
 
 type options struct {
 	ConfigPath string
+	Debug      bool
 }
 
 func main() {
@@ -32,7 +34,14 @@ func run(parent context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	cfg, err := loadConfig(args)
+	opts, err := parseArgs(args)
+	if err != nil {
+		return fmt.Errorf("parse args failed: %w", err)
+	}
+
+	setGinMode(opts.Debug)
+
+	cfg, err := loadConfig(opts)
 	if err != nil {
 		return fmt.Errorf("load config failed: %w", err)
 	}
@@ -58,12 +67,7 @@ func run(parent context.Context, args []string) error {
 	return nil
 }
 
-func loadConfig(args []string) (config.Config, error) {
-	opts, err := parseArgs(args)
-	if err != nil {
-		return config.Config{}, err
-	}
-
+func loadConfig(opts options) (config.Config, error) {
 	if err := loadEnvFile(opts.ConfigPath); err != nil {
 		return config.Config{}, err
 	}
@@ -77,6 +81,7 @@ func parseArgs(args []string) (options, error) {
 	flags := flag.NewFlagSet("simplepool-api", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.ConfigPath, "config", ".env", "path to env config file")
+	flags.BoolVar(&opts.Debug, "debug", false, "enable gin debug mode")
 
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
@@ -87,6 +92,15 @@ func parseArgs(args []string) (options, error) {
 	}
 
 	return opts, nil
+}
+
+func setGinMode(debug bool) {
+	if debug {
+		gin.SetMode(gin.DebugMode)
+		return
+	}
+
+	gin.SetMode(gin.ReleaseMode)
 }
 
 func loadEnvFile(path string) error {

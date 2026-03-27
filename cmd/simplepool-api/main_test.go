@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestParseArgsAcceptsConfigPath(t *testing.T) {
@@ -16,6 +18,38 @@ func TestParseArgsAcceptsConfigPath(t *testing.T) {
 
 	if got, want := opts.ConfigPath, "runtime/simplepool.env"; got != want {
 		t.Fatalf("ConfigPath = %q, want %q", got, want)
+	}
+
+	if opts.Debug {
+		t.Fatal("Debug = true, want false")
+	}
+}
+
+func TestParseArgsAcceptsDebugFlag(t *testing.T) {
+	opts, err := parseArgs([]string{"-debug"})
+	if err != nil {
+		t.Fatalf("parseArgs() error = %v", err)
+	}
+
+	if !opts.Debug {
+		t.Fatal("Debug = false, want true")
+	}
+}
+
+func TestSetGinModeDefaultsToRelease(t *testing.T) {
+	previous := gin.Mode()
+	t.Cleanup(func() {
+		gin.SetMode(previous)
+	})
+
+	setGinMode(false)
+	if got, want := gin.Mode(), gin.ReleaseMode; got != want {
+		t.Fatalf("gin.Mode() = %q, want %q", got, want)
+	}
+
+	setGinMode(true)
+	if got, want := gin.Mode(), gin.DebugMode; got != want {
+		t.Fatalf("gin.Mode() = %q, want %q", got, want)
 	}
 }
 
@@ -39,7 +73,7 @@ func TestLoadConfigUsesConfigFile(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	cfg, err := loadConfig([]string{"--config", configPath})
+	cfg, err := loadConfig(options{ConfigPath: configPath})
 	if err != nil {
 		t.Fatalf("loadConfig() error = %v", err)
 	}

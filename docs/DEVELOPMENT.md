@@ -26,10 +26,11 @@
 
 ## 通过配置文件启动
 
-后端入口支持通过 `--config` 显式指定一份 ENV 风格配置文件；文件内容仍然使用现有的 `SIMPLEPOOL_*` 键。
+后端入口支持通过 `--config` 显式指定一份 ENV 风格配置文件；文件内容仍然使用现有的 `SIMPLEPOOL_*` 键。Gin 默认以 `release` 模式启动，只有显式追加 `-debug` 才会启用 `debug` 模式。
 
 - 示例文件：`.env.example`
 - 直接运行：`go run ./cmd/simplepool-api --config .env.example`
+- 调试运行：`go run ./cmd/simplepool-api --config .env.example -debug`
 - 或使用任务：`mise run api -- --config .env.example`
 
 ## 前端嵌入
