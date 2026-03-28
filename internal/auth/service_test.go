@@ -7,10 +7,7 @@ import (
 	"time"
 
 	"github.com/WAY29/SimplePool/internal/auth"
-	"github.com/WAY29/SimplePool/internal/domain"
-	"github.com/WAY29/SimplePool/internal/security"
 	"github.com/WAY29/SimplePool/internal/store/sqlite"
-	"github.com/google/uuid"
 )
 
 func TestEnsureAdminCreatesOnlyOnce(t *testing.T) {
@@ -92,26 +89,24 @@ func TestAuthenticateRejectsExpiredSession(t *testing.T) {
 		t.Fatalf("EnsureAdmin() error = %v", err)
 	}
 
-	user, err := repos.AdminUsers.GetByUsername(ctx, "admin")
+	login, err := service.Login(ctx, auth.LoginInput{
+		Username: "admin",
+		Password: "secret-1",
+	})
 	if err != nil {
-		t.Fatalf("GetByUsername() error = %v", err)
+		t.Fatalf("Login() error = %v", err)
 	}
 
-	token := "plain-session-token"
-	expiresAt := time.Now().Add(-time.Hour).UTC()
-	session := &domain.Session{
-		ID:         uuid.NewString(),
-		UserID:     user.ID,
-		TokenHash:  security.HashToken(token),
-		ExpiresAt:  expiresAt,
-		CreatedAt:  expiresAt.Add(-time.Hour),
-		LastSeenAt: expiresAt.Add(-time.Hour),
+	session, err := repos.Sessions.GetByID(ctx, login.Session.ID)
+	if err != nil {
+		t.Fatalf("Sessions.GetByID() error = %v", err)
 	}
-	if err := repos.Sessions.Create(ctx, session); err != nil {
-		t.Fatalf("Sessions.Create() error = %v", err)
+	session.ExpiresAt = login.Session.CreatedAt.Add(-time.Minute)
+	if err := repos.Sessions.Update(ctx, session); err != nil {
+		t.Fatalf("Sessions.Update() error = %v", err)
 	}
 
-	if _, err := service.Authenticate(ctx, token); err == nil {
+	if _, err := service.Authenticate(ctx, login.Token); err == nil {
 		t.Fatal("Authenticate() error = nil, want error")
 	}
 }

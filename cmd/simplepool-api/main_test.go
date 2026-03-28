@@ -48,7 +48,7 @@ func TestParseArgsHelpReturnsFlagErrHelp(t *testing.T) {
 
 func TestUsageTextIncludesSupportedFlags(t *testing.T) {
 	text := usageText()
-	for _, want := range []string{"Usage of simplepool-api:", "-config", "-debug"} {
+	for _, want := range []string{"Usage of " + cliName + ":", "-config", "-debug"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("usageText() missing %q in %q", want, text)
 		}

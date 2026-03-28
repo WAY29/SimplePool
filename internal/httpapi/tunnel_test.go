@@ -96,3 +96,41 @@ func TestTunnelRoutesAllowCrossGroupSameNameAndRejectSameGroupDuplicate(t *testi
 		t.Fatalf("POST /api/tunnels duplicate status = %d, want 409", duplicateResp.Code)
 	}
 }
+
+func TestTunnelRoutesStartReturnsConflictWhenStoredNodeIsLocked(t *testing.T) {
+	router, token := newProtectedRouter(t)
+
+	firstCreateResp := performJSON(t, router, http.MethodPost, "/api/tunnels", token, map[string]any{
+		"name":     "proxy-a",
+		"group_id": "group-asia",
+	})
+	if firstCreateResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/tunnels first status = %d, want 201", firstCreateResp.Code)
+	}
+	var firstCreated map[string]any
+	_ = json.Unmarshal(firstCreateResp.Body.Bytes(), &firstCreated)
+	firstTunnelID := firstCreated["id"].(string)
+
+	stopResp := performJSON(t, router, http.MethodPost, "/api/tunnels/"+firstTunnelID+"/stop", token, map[string]any{})
+	if stopResp.Code != http.StatusOK {
+		t.Fatalf("POST /api/tunnels/:id/stop status = %d, want 200", stopResp.Code)
+	}
+
+	secondCreateResp := performJSON(t, router, http.MethodPost, "/api/tunnels", token, map[string]any{
+		"name":     "proxy-b",
+		"group_id": "group-asia",
+	})
+	if secondCreateResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/tunnels second status = %d, want 201", secondCreateResp.Code)
+	}
+
+	startResp := performJSON(t, router, http.MethodPost, "/api/tunnels/"+firstTunnelID+"/start", token, map[string]any{})
+	if startResp.Code != http.StatusConflict {
+		t.Fatalf("POST /api/tunnels/:id/start status = %d, want 409", startResp.Code)
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(startResp.Body.Bytes(), &payload)
+	if payload["code"] != "node_locked" {
+		t.Fatalf("error code = %v, want node_locked", payload["code"])
+	}
+}

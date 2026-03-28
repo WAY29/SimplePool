@@ -169,6 +169,142 @@ func TestTunnelServiceStartReusesStoredRuntimeConfigWithoutReprobe(t *testing.T)
 	}
 }
 
+func TestTunnelServiceCreateSkipsNodesLockedByOtherActiveTunnels(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	fastLatency := int64(10)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-create-lock-hk-fast",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &fastLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() hk-fast error = %v", err)
+	}
+	slowLatency := int64(30)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-create-lock-jp-slow",
+		NodeID:    "node-jp-slow",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &slowLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() jp-slow error = %v", err)
+	}
+
+	first, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() first error = %v", err)
+	}
+	if first.CurrentNodeID == nil || *first.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("first CurrentNodeID = %v, want node-hk-fast", first.CurrentNodeID)
+	}
+
+	second, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-b",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() second error = %v", err)
+	}
+	if second.CurrentNodeID == nil || *second.CurrentNodeID != "node-jp-slow" {
+		t.Fatalf("second CurrentNodeID = %v, want node-jp-slow", second.CurrentNodeID)
+	}
+}
+
+func TestTunnelServiceStartFailsWhenStoredNodeLockedByAnotherActiveTunnel(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	fastLatency := int64(10)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-start-lock-hk-fast",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &fastLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() hk-fast error = %v", err)
+	}
+	slowLatency := int64(30)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-start-lock-jp-slow",
+		NodeID:    "node-jp-slow",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &slowLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() jp-slow error = %v", err)
+	}
+
+	first, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() first error = %v", err)
+	}
+	if first.CurrentNodeID == nil || *first.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("first CurrentNodeID = %v, want node-hk-fast", first.CurrentNodeID)
+	}
+	if _, err := service.Stop(ctx, first.ID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	second, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-b",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() second error = %v", err)
+	}
+	if second.CurrentNodeID == nil || *second.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("second CurrentNodeID = %v, want node-hk-fast after stopped tunnel releases lock", second.CurrentNodeID)
+	}
+
+	beforeProbeCalls := deps.prober.CallCount()
+	beforeStartCalls := deps.runtime.startCalls
+	deps.prober.err = errors.New("probe should not be called on strict start conflict")
+
+	_, err = service.Start(ctx, first.ID)
+	if !errors.Is(err, tunnel.ErrNodeLocked) {
+		t.Fatalf("Start() error = %v, want ErrNodeLocked", err)
+	}
+	if deps.prober.CallCount() != beforeProbeCalls {
+		t.Fatalf("prober calls = %d, want %d without reprobe", deps.prober.CallCount(), beforeProbeCalls)
+	}
+	if deps.runtime.startCalls != beforeStartCalls {
+		t.Fatalf("startCalls = %d, want %d after failed strict start", deps.runtime.startCalls, beforeStartCalls)
+	}
+
+	got, err := service.Get(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != domain.TunnelStatusStopped {
+		t.Fatalf("Status = %q, want stopped after strict start conflict", got.Status)
+	}
+	if got.CurrentNodeID == nil || *got.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("CurrentNodeID = %v, want keep preferred node-hk-fast", got.CurrentNodeID)
+	}
+	if state := deps.runtime.state(first.ID); state == nil || state.running {
+		t.Fatalf("runtime state = %+v, want stopped after strict start conflict", state)
+	}
+}
+
 func TestTunnelServiceInitializeRestoresRunningTunnelWithoutReprobe(t *testing.T) {
 	ctx := context.Background()
 	service, deps := newTunnelService(t)
@@ -392,6 +528,64 @@ func TestTunnelServiceRefreshExcludesCurrentNodeAndWaitsForAlternative(t *testin
 	callIDs := deps.prober.CallIDs()
 	if !slices.Equal(callIDs, []string{"node-jp-slow"}) {
 		t.Fatalf("prober call ids = %v, want only alternative node-jp-slow", callIDs)
+	}
+}
+
+func TestTunnelServiceRefreshExcludesNodesLockedByOtherActiveTunnels(t *testing.T) {
+	ctx := context.Background()
+	service, deps := newTunnelService(t)
+	seedTunnelNodes(t, ctx, deps.repos, deps.now, deps.cipher)
+	groupID := seedTunnelGroup(t, ctx, deps.groupService, "亚洲", "^(HK|JP)-")
+
+	fastLatency := int64(10)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-refresh-lock-hk-fast",
+		NodeID:    "node-hk-fast",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &fastLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() hk-fast error = %v", err)
+	}
+	slowLatency := int64(30)
+	if err := deps.repos.LatencySamples.Create(ctx, &domain.LatencySample{
+		ID:        "sample-refresh-lock-jp-slow",
+		NodeID:    "node-jp-slow",
+		TestURL:   "https://cloudflare.com/cdn-cgi/trace",
+		LatencyMS: &slowLatency,
+		Success:   true,
+		CreatedAt: deps.now().UTC(),
+	}); err != nil {
+		t.Fatalf("LatencySamples.Create() jp-slow error = %v", err)
+	}
+
+	first, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-a",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() first error = %v", err)
+	}
+	if first.CurrentNodeID == nil || *first.CurrentNodeID != "node-hk-fast" {
+		t.Fatalf("first CurrentNodeID = %v, want node-hk-fast", first.CurrentNodeID)
+	}
+
+	second, err := service.Create(ctx, tunnel.CreateInput{
+		Name:    "proxy-b",
+		GroupID: groupID,
+	})
+	if err != nil {
+		t.Fatalf("Create() second error = %v", err)
+	}
+	if second.CurrentNodeID == nil || *second.CurrentNodeID != "node-jp-slow" {
+		t.Fatalf("second CurrentNodeID = %v, want node-jp-slow", second.CurrentNodeID)
+	}
+
+	advanceTunnelClock(deps.now, 6*time.Minute)
+	_, err = service.Refresh(ctx, first.ID)
+	if !errors.Is(err, tunnel.ErrNoAvailableNodes) {
+		t.Fatalf("Refresh() error = %v, want ErrNoAvailableNodes when alternative node is locked", err)
 	}
 }
 

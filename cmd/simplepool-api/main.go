@@ -24,6 +24,8 @@ type options struct {
 	Debug      bool
 }
 
+const cliName = "SimpleTool"
+
 func main() {
 	if err := run(context.Background(), os.Args[1:]); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -89,7 +91,7 @@ func loadConfig(opts options) (config.Config, error) {
 func parseArgs(args []string) (options, error) {
 	var opts options
 
-	flags := flag.NewFlagSet("simplepool", flag.ContinueOnError)
+	flags := flag.NewFlagSet(cliName, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.ConfigPath, "config", ".env", "path to env config file")
 	flags.BoolVar(&opts.Debug, "debug", false, "enable gin debug mode")
@@ -107,12 +109,12 @@ func parseArgs(args []string) (options, error) {
 
 func usageText() string {
 	var builder strings.Builder
-	flags := flag.NewFlagSet("simplepool", flag.ContinueOnError)
+	flags := flag.NewFlagSet(cliName, flag.ContinueOnError)
 	flags.SetOutput(&builder)
 	flags.String("config", ".env", "path to env config file")
 	flags.Bool("debug", false, "enable gin debug mode")
 	flags.PrintDefaults()
-	return "Usage of simplepool:\n" + builder.String()
+	return "Usage of " + cliName + ":\n" + builder.String()
 }
 
 func setGinMode(debug bool) {

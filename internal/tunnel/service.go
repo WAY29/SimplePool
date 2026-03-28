@@ -28,6 +28,7 @@ import (
 var (
 	ErrInvalidPayload   = errors.New("tunnel: invalid payload")
 	ErrNoAvailableNodes = errors.New("tunnel: no available nodes")
+	ErrNodeLocked       = errors.New("tunnel: node locked by another active tunnel")
 	ErrTunnelNotRunning = errors.New("tunnel: tunnel not running")
 	ErrRuntimeConfigNil = errors.New("tunnel: runtime config missing")
 	ErrTunnelConflict   = errors.New("tunnel: duplicate name in group")
@@ -318,6 +319,13 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*View, error) 
 	}
 	releaseReserved = false
 
+	entity.CurrentNodeID = stringPtr(prepared.currentNode.ID)
+	entity.UpdatedAt = s.now().UTC()
+	if err := s.tunnels.Update(ctx, entity); err != nil {
+		prepared.stopBackground()
+		return nil, err
+	}
+
 	if err := s.runtime.Start(ctx, entity.ID, layout, prepared.config); err != nil {
 		prepared.stopBackground()
 		return nil, err
@@ -413,8 +421,36 @@ func (s *Service) Start(ctx context.Context, id string) (*View, error) {
 	if current.Status != domain.TunnelStatusStopped {
 		return toView(current), nil
 	}
-	layout, err := s.startStoredRuntime(ctx, current)
+	if err := s.ensureStoredNodeAvailableForStart(ctx, current); err != nil {
+		current.LastRefreshError = err.Error()
+		current.UpdatedAt = s.now().UTC()
+		if updateErr := s.tunnels.Update(ctx, current); updateErr != nil {
+			return nil, updateErr
+		}
+		return nil, err
+	}
+	layout, err := s.runtimeLayoutForTunnel(ctx, current)
 	if err != nil {
+		return nil, err
+	}
+	config, err := loadStoredRuntimeConfig(current)
+	if err != nil {
+		current.LastRefreshError = err.Error()
+		current.UpdatedAt = s.now().UTC()
+		if updateErr := s.tunnels.Update(ctx, current); updateErr != nil {
+			return nil, updateErr
+		}
+		return nil, err
+	}
+
+	current.Status = domain.TunnelStatusStarting
+	current.LastRefreshError = ""
+	current.UpdatedAt = s.now().UTC()
+	if err := s.tunnels.Update(ctx, current); err != nil {
+		return nil, err
+	}
+	if err := s.runtime.Start(ctx, current.ID, layout, config); err != nil {
+		current.Status = domain.TunnelStatusStopped
 		current.LastRefreshError = err.Error()
 		current.UpdatedAt = s.now().UTC()
 		if updateErr := s.tunnels.Update(ctx, current); updateErr != nil {
@@ -429,6 +465,10 @@ func (s *Service) Start(ctx context.Context, id string) (*View, error) {
 	current.UpdatedAt = s.now().UTC()
 	if err := s.tunnels.Update(ctx, current); err != nil {
 		_ = s.runtime.Stop(ctx, current.ID)
+		current.Status = domain.TunnelStatusStopped
+		current.LastRefreshError = err.Error()
+		current.UpdatedAt = s.now().UTC()
+		_ = s.tunnels.Update(ctx, current)
 		return nil, err
 	}
 	s.recordEvent(ctx, current.ID, "tunnel.started", map[string]any{
@@ -695,6 +735,10 @@ func (s *Service) prepareRuntime(ctx context.Context, tunnelID, groupID string, 
 	if err != nil {
 		return nil, err
 	}
+	lockedNodeIDs, err := s.lockedNodeIDs(ctx, tunnelID)
+	if err != nil {
+		return nil, err
+	}
 
 	candidates := make([]runtimeCandidate, 0, len(nodes))
 	runtimeNodes := make([]singbox.RuntimeNode, 0, len(nodes))
@@ -702,6 +746,9 @@ func (s *Service) prepareRuntime(ctx context.Context, tunnelID, groupID string, 
 	var cachedNode *domain.Node
 	var cachedLatency int64
 	for _, item := range nodes {
+		if _, locked := lockedNodeIDs[item.ID]; locked {
+			continue
+		}
 		target, runtimeNode, err := s.buildRuntimeNode(item)
 		if err != nil {
 			return nil, err
@@ -735,6 +782,10 @@ func (s *Service) prepareRefreshRuntime(ctx context.Context, tunnelID string, cu
 	if err != nil {
 		return nil, err
 	}
+	lockedNodeIDs, err := s.lockedNodeIDs(ctx, tunnelID)
+	if err != nil {
+		return nil, err
+	}
 
 	currentNodeID := ""
 	if current.CurrentNodeID != nil {
@@ -745,6 +796,11 @@ func (s *Service) prepareRefreshRuntime(ctx context.Context, tunnelID string, cu
 	runtimeNodes := make([]singbox.RuntimeNode, 0, len(nodes))
 	cachedNodes := make([]*domain.Node, 0, len(nodes))
 	for _, item := range nodes {
+		if item.ID != currentNodeID {
+			if _, locked := lockedNodeIDs[item.ID]; locked {
+				continue
+			}
+		}
 		target, runtimeNode, err := s.buildRuntimeNode(item)
 		if err != nil {
 			return nil, err
@@ -996,6 +1052,57 @@ func (s *Service) loadGroupSnapshot(ctx context.Context, groupID string) ([]*dom
 		return nil, ErrNoAvailableNodes
 	}
 	return result, nil
+}
+
+func (s *Service) lockedNodeIDs(ctx context.Context, excludeTunnelID string) (map[string]struct{}, error) {
+	items, err := s.tunnels.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	locked := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item == nil || item.ID == excludeTunnelID || !statusHoldsNodeLock(item.Status) {
+			continue
+		}
+		nodeID := normalizedNodeID(item.CurrentNodeID)
+		if nodeID == "" {
+			continue
+		}
+		locked[nodeID] = struct{}{}
+	}
+	return locked, nil
+}
+
+func (s *Service) ensureStoredNodeAvailableForStart(ctx context.Context, current *domain.Tunnel) error {
+	currentNodeID := normalizedNodeID(current.CurrentNodeID)
+	if currentNodeID == "" {
+		return ErrNoAvailableNodes
+	}
+
+	nodes, err := s.loadGroupSnapshot(ctx, current.GroupID)
+	if err != nil {
+		return err
+	}
+	available := false
+	for _, item := range nodes {
+		if item.ID == currentNodeID {
+			available = true
+			break
+		}
+	}
+	if !available {
+		return ErrNoAvailableNodes
+	}
+
+	lockedNodeIDs, err := s.lockedNodeIDs(ctx, current.ID)
+	if err != nil {
+		return err
+	}
+	if _, locked := lockedNodeIDs[currentNodeID]; locked {
+		return ErrNodeLocked
+	}
+	return nil
 }
 
 func loadStoredRuntimeConfig(item *domain.Tunnel) ([]byte, error) {
@@ -1293,6 +1400,22 @@ func sameStringSet(left, right []string) bool {
 
 func stringPtr(value string) *string {
 	return &value
+}
+
+func normalizedNodeID(nodeID *string) string {
+	if nodeID == nil {
+		return ""
+	}
+	return strings.TrimSpace(*nodeID)
+}
+
+func statusHoldsNodeLock(status string) bool {
+	switch status {
+	case domain.TunnelStatusStarting, domain.TunnelStatusRunning, domain.TunnelStatusDegraded:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) runtimeLayoutFor(ctx context.Context, groupID, tunnelName string) (singbox.RuntimeLayout, error) {
