@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	sbbox "github.com/sagernet/sing-box"
@@ -22,18 +23,19 @@ import (
 )
 
 type Prober struct {
-	resolveTestURL func(context.Context) string
-	timeout        time.Duration
-	logLevel       string
+	resolveTestURL       func(context.Context) string
+	timeout              time.Duration
+	logLevel             string
+	upstreamHTTPProxyURL string
 }
 
-func NewProber(testURL string, timeout time.Duration, logLevel string) *Prober {
+func NewProber(testURL string, timeout time.Duration, logLevel string, upstreamHTTPProxyURLs ...string) *Prober {
 	return NewDynamicProber(func(context.Context) string {
 		return testURL
-	}, timeout, logLevel)
+	}, timeout, logLevel, upstreamHTTPProxyURLs...)
 }
 
-func NewDynamicProber(resolveTestURL func(context.Context) string, timeout time.Duration, logLevel string) *Prober {
+func NewDynamicProber(resolveTestURL func(context.Context) string, timeout time.Duration, logLevel string, upstreamHTTPProxyURLs ...string) *Prober {
 	if resolveTestURL == nil {
 		resolveTestURL = func(context.Context) string {
 			return settings.DefaultProbeTestURL
@@ -42,10 +44,15 @@ func NewDynamicProber(resolveTestURL func(context.Context) string, timeout time.
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
+	upstreamHTTPProxyURL := ""
+	if len(upstreamHTTPProxyURLs) > 0 {
+		upstreamHTTPProxyURL = strings.TrimSpace(upstreamHTTPProxyURLs[0])
+	}
 	return &Prober{
-		resolveTestURL: resolveTestURL,
-		timeout:        timeout,
-		logLevel:       logging.NormalizeLevel(logLevel),
+		resolveTestURL:       resolveTestURL,
+		timeout:              timeout,
+		logLevel:             logging.NormalizeLevel(logLevel),
+		upstreamHTTPProxyURL: upstreamHTTPProxyURL,
 	}
 }
 
@@ -126,9 +133,15 @@ func (p *Prober) testURL(ctx context.Context) string {
 }
 
 func (p *Prober) buildConfig(target node.ProbeTarget, inboundPort int) ([]byte, error) {
-	outbound, err := buildOutbound(target)
+	outbound, err := buildOutbound(target, p.upstreamDetourTag())
 	if err != nil {
 		return nil, err
+	}
+	outbounds := []any{outbound}
+	if upstreamHTTPProxy, err := buildUpstreamHTTPProxyOutbound(p.upstreamHTTPProxyURL); err != nil {
+		return nil, err
+	} else if upstreamHTTPProxy != nil {
+		outbounds = append(outbounds, upstreamHTTPProxy)
 	}
 
 	config := map[string]any{
@@ -152,9 +165,7 @@ func (p *Prober) buildConfig(target node.ProbeTarget, inboundPort int) ([]byte, 
 				"listen_port": inboundPort,
 			},
 		},
-		"outbounds": []any{
-			outbound,
-		},
+		"outbounds": outbounds,
 		"route": map[string]any{
 			"final":                   "probe-out",
 			"default_domain_resolver": localDNSTag,
@@ -163,7 +174,14 @@ func (p *Prober) buildConfig(target node.ProbeTarget, inboundPort int) ([]byte, 
 	return json.Marshal(config)
 }
 
-func buildOutbound(target node.ProbeTarget) (map[string]any, error) {
+func (p *Prober) upstreamDetourTag() string {
+	if p == nil || strings.TrimSpace(p.upstreamHTTPProxyURL) == "" {
+		return ""
+	}
+	return upstreamHTTPProxyTag
+}
+
+func buildOutbound(target node.ProbeTarget, detour string) (map[string]any, error) {
 	return buildRuntimeOutbound("probe-out", RuntimeNode{
 		ID:             target.ID,
 		Name:           target.Name,
@@ -174,7 +192,7 @@ func buildOutbound(target node.ProbeTarget) (map[string]any, error) {
 		TransportJSON:  target.TransportJSON,
 		TLSJSON:        target.TLSJSON,
 		RawPayloadJSON: target.RawPayloadJSON,
-	})
+	}, detour)
 }
 
 func buildTransportMap(transport map[string]any) map[string]any {

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,10 +29,11 @@ import (
 )
 
 const (
-	selectorTag    = "tunnel-selector"
-	httpInboundTag = "http-in"
-	directTag      = "system-direct"
-	localDNSTag    = "local"
+	selectorTag          = "tunnel-selector"
+	httpInboundTag       = "http-in"
+	directTag            = "system-direct"
+	localDNSTag          = "local"
+	upstreamHTTPProxyTag = "upstream-http-proxy"
 )
 
 var (
@@ -80,7 +82,13 @@ type RuntimeLayout struct {
 	StderrLogPath string
 }
 
-type ConfigRenderer struct{}
+type ConfigRendererOptions struct {
+	UpstreamHTTPProxyURL string
+}
+
+type ConfigRenderer struct {
+	upstreamHTTPProxyURL string
+}
 
 type Compiler interface {
 	Format(config []byte) ([]byte, error)
@@ -203,8 +211,15 @@ func sanitizeRuntimeName(name string) string {
 	return name
 }
 
-func NewConfigRenderer() *ConfigRenderer {
-	return &ConfigRenderer{}
+func NewConfigRenderer(options ...ConfigRendererOptions) *ConfigRenderer {
+	var opts ConfigRendererOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+
+	return &ConfigRenderer{
+		upstreamHTTPProxyURL: strings.TrimSpace(opts.UpstreamHTTPProxyURL),
+	}
 }
 
 func (r *ConfigRenderer) Render(input RenderInput) ([]byte, error) {
@@ -224,7 +239,7 @@ func (r *ConfigRenderer) Render(input RenderInput) ([]byte, error) {
 	currentTag := ""
 	for _, node := range input.Nodes {
 		tag := outboundTag(node.ID)
-		outbound, err := buildRuntimeOutbound(tag, node)
+		outbound, err := buildRuntimeOutbound(tag, node, r.upstreamDetourTag())
 		if err != nil {
 			return nil, err
 		}
@@ -245,6 +260,11 @@ func (r *ConfigRenderer) Render(input RenderInput) ([]byte, error) {
 			"outbounds": selectorOutbounds,
 			"default":   currentTag,
 		})
+	}
+	if upstreamHTTPProxy, err := buildUpstreamHTTPProxyOutbound(r.upstreamHTTPProxyURL); err != nil {
+		return nil, err
+	} else if upstreamHTTPProxy != nil {
+		outbounds = append(outbounds, upstreamHTTPProxy)
 	}
 	outbounds = append(outbounds, map[string]any{
 		"type": "direct",
@@ -303,6 +323,13 @@ func buildHTTPInbound(host string, port int, auth *ProxyAuth) map[string]any {
 	return inbound
 }
 
+func (r *ConfigRenderer) upstreamDetourTag() string {
+	if r == nil || strings.TrimSpace(r.upstreamHTTPProxyURL) == "" {
+		return ""
+	}
+	return upstreamHTTPProxyTag
+}
+
 func outboundTag(nodeID string) string {
 	return "node-" + nodeID
 }
@@ -315,7 +342,7 @@ func serverNeedsResolver(server string) bool {
 	return net.ParseIP(server) == nil
 }
 
-func buildRuntimeOutbound(tag string, node RuntimeNode) (map[string]any, error) {
+func buildRuntimeOutbound(tag string, node RuntimeNode, detour string) (map[string]any, error) {
 	credential := make(map[string]any)
 	if err := json.Unmarshal(node.Credential, &credential); err != nil {
 		return nil, err
@@ -329,6 +356,9 @@ func buildRuntimeOutbound(tag string, node RuntimeNode) (map[string]any, error) 
 		"tag":         tag,
 		"server":      node.Server,
 		"server_port": node.ServerPort,
+	}
+	if detour != "" {
+		outbound["detour"] = detour
 	}
 	if serverNeedsResolver(node.Server) {
 		outbound["domain_resolver"] = localDNSTag
@@ -380,6 +410,77 @@ func buildRuntimeOutbound(tag string, node RuntimeNode) (map[string]any, error) 
 	}
 
 	return outbound, nil
+}
+
+type upstreamHTTPProxyConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+}
+
+func buildUpstreamHTTPProxyOutbound(rawURL string) (map[string]any, error) {
+	parsed, err := parseUpstreamHTTPProxyURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if parsed == nil {
+		return nil, nil
+	}
+
+	outbound := map[string]any{
+		"type":        "http",
+		"tag":         upstreamHTTPProxyTag,
+		"server":      parsed.Host,
+		"server_port": parsed.Port,
+	}
+	if parsed.Username != "" {
+		outbound["username"] = parsed.Username
+	}
+	if parsed.Password != "" {
+		outbound["password"] = parsed.Password
+	}
+	if serverNeedsResolver(parsed.Host) {
+		outbound["domain_resolver"] = localDNSTag
+	}
+
+	return outbound, nil
+}
+
+func parseUpstreamHTTPProxyURL(rawURL string) (*upstreamHTTPProxyConfig, error) {
+	value := strings.TrimSpace(rawURL)
+	if value == "" {
+		return nil, nil
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid upstream http proxy url: %w", err)
+	}
+	if parsed.Scheme != "http" {
+		return nil, fmt.Errorf("invalid upstream http proxy url: unsupported scheme %q", parsed.Scheme)
+	}
+
+	host := parsed.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("invalid upstream http proxy url: missing host")
+	}
+
+	port := 80
+	if parsed.Port() != "" {
+		port, err = strconv.Atoi(parsed.Port())
+		if err != nil || port <= 0 || port > 65535 {
+			return nil, fmt.Errorf("invalid upstream http proxy url: invalid port")
+		}
+	}
+
+	password, _ := parsed.User.Password()
+	return &upstreamHTTPProxyConfig{
+		Host:     host,
+		Port:     port,
+		Username: parsed.User.Username(),
+		Password: password,
+	}, nil
 }
 
 func (c *ConfigCompiler) Format(config []byte) ([]byte, error) {

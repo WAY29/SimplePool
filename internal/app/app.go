@@ -90,7 +90,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 				return settings.DefaultProbeTestURL
 			}
 			return view.TestURL
-		}, 3*time.Second, cfg.LogLevel)
+		}, 3*time.Second, cfg.LogLevel, cfg.UpstreamHTTPProxyURL)
 	}
 	fetcher := deps.SubscriptionFetcher
 	if fetcher == nil {
@@ -134,19 +134,20 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 		return nil, apperr.Wrap(apperr.CodeRuntime, op, err)
 	}
 	tunnelService := tunnel.NewService(tunnel.Options{
-		Tunnels:        repos.Tunnels,
-		TunnelEvents:   repos.TunnelEvents,
-		LatencySamples: repos.LatencySamples,
-		Groups:         groupService,
-		Nodes:          repos.Nodes,
-		LogLevel:       cfg.LogLevel,
-		Cipher:         cipher,
-		Prober:         prober,
-		ProbeCacheTTL:  probeCacheTTL,
-		Runtime:        runtimeManager,
-		RuntimeRoot:    cfg.Paths.RuntimeDir,
-		Now:            now,
-		Logger:         logger,
+		Tunnels:              repos.Tunnels,
+		TunnelEvents:         repos.TunnelEvents,
+		LatencySamples:       repos.LatencySamples,
+		Groups:               groupService,
+		Nodes:                repos.Nodes,
+		LogLevel:             cfg.LogLevel,
+		Cipher:               cipher,
+		Prober:               prober,
+		ProbeCacheTTL:        probeCacheTTL,
+		Runtime:              runtimeManager,
+		RuntimeRoot:          cfg.Paths.RuntimeDir,
+		UpstreamHTTPProxyURL: cfg.UpstreamHTTPProxyURL,
+		Now:                  now,
+		Logger:               logger,
 	})
 	if err := tunnelService.Initialize(ctx); err != nil {
 		_ = tunnelService.Close()

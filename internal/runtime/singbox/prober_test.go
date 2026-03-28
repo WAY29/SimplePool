@@ -131,3 +131,57 @@ func TestProberBuildConfigUsesLocalResolverForDomainOutbounds(t *testing.T) {
 		t.Fatalf("route.default_domain_resolver = %v, want local", routeConfig["default_domain_resolver"])
 	}
 }
+
+func TestProberBuildConfigRoutesOutboundThroughUpstreamHTTPProxy(t *testing.T) {
+	prober := NewProber("https://cloudflare.com/cdn-cgi/trace", 0, "info", "http://user-1:pass-1@proxy.example.com:8080")
+
+	configJSON, err := prober.buildConfig(node.ProbeTarget{
+		ID:             "node-1",
+		Name:           "HK-A",
+		Protocol:       "trojan",
+		Server:         "downloadcfpro.example.com",
+		ServerPort:     443,
+		Credential:     []byte(`{"password":"secret"}`),
+		TransportJSON:  `{}`,
+		TLSJSON:        `{"enabled":true,"server_name":"hk.example.com"}`,
+		RawPayloadJSON: `{}`,
+	}, 18080)
+	if err != nil {
+		t.Fatalf("buildConfig() error = %v", err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(configJSON, &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	outbounds := config["outbounds"].([]any)
+	if len(outbounds) != 2 {
+		t.Fatalf("len(outbounds) = %d, want 2", len(outbounds))
+	}
+
+	probeOutbound := outbounds[0].(map[string]any)
+	if probeOutbound["tag"] != "probe-out" {
+		t.Fatalf("probe outbound tag = %v, want probe-out", probeOutbound["tag"])
+	}
+	if probeOutbound["detour"] != "upstream-http-proxy" {
+		t.Fatalf("probe outbound detour = %v, want upstream-http-proxy", probeOutbound["detour"])
+	}
+
+	upstream := outbounds[1].(map[string]any)
+	if upstream["tag"] != "upstream-http-proxy" {
+		t.Fatalf("upstream tag = %v, want upstream-http-proxy", upstream["tag"])
+	}
+	if upstream["type"] != "http" {
+		t.Fatalf("upstream type = %v, want http", upstream["type"])
+	}
+	if upstream["server"] != "proxy.example.com" {
+		t.Fatalf("upstream server = %v, want proxy.example.com", upstream["server"])
+	}
+	if int(upstream["server_port"].(float64)) != 8080 {
+		t.Fatalf("upstream server_port = %v, want 8080", upstream["server_port"])
+	}
+	if upstream["username"] != "user-1" || upstream["password"] != "pass-1" {
+		t.Fatalf("upstream auth = %+v, want configured username/password", upstream)
+	}
+}

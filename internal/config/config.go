@@ -3,8 +3,10 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/WAY29/SimplePool/internal/apperr"
@@ -19,12 +21,13 @@ const (
 )
 
 type Config struct {
-	Debug    bool
-	HTTPAddr string
-	LogLevel string
-	Paths    Paths
-	Admin    Admin
-	Security Security
+	Debug                bool
+	HTTPAddr             string
+	LogLevel             string
+	UpstreamHTTPProxyURL string
+	Paths                Paths
+	Admin                Admin
+	Security             Security
 }
 
 type Paths struct {
@@ -77,10 +80,16 @@ func Load() (Config, error) {
 		return Config{}, apperr.Wrap(apperr.CodeConfig, op, err)
 	}
 
+	upstreamHTTPProxyURL := strings.TrimSpace(os.Getenv("SIMPLEPOOL_UPSTREAM_HTTP_PROXY_URL"))
+	if err := validateUpstreamHTTPProxyURL(upstreamHTTPProxyURL); err != nil {
+		return Config{}, apperr.Wrap(apperr.CodeConfig, op, err)
+	}
+
 	return Config{
-		Debug:    parseBoolEnv("SIMPLEPOOL_DEBUG"),
-		HTTPAddr: envOrDefault("SIMPLEPOOL_HTTP_ADDR", defaultHTTPAddr),
-		LogLevel: envOrDefault("SIMPLEPOOL_LOG_LEVEL", "info"),
+		Debug:                parseBoolEnv("SIMPLEPOOL_DEBUG"),
+		HTTPAddr:             envOrDefault("SIMPLEPOOL_HTTP_ADDR", defaultHTTPAddr),
+		LogLevel:             envOrDefault("SIMPLEPOOL_LOG_LEVEL", "info"),
+		UpstreamHTTPProxyURL: upstreamHTTPProxyURL,
 		Paths: Paths{
 			DataDir:    dataDir,
 			RuntimeDir: runtimeDir,
@@ -160,4 +169,33 @@ func resolvePath(path string) (string, error) {
 	}
 
 	return filepath.Abs(path)
+}
+
+func validateUpstreamHTTPProxyURL(raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("upstream http proxy url is invalid: %w", err)
+	}
+	if parsed.Scheme != "http" {
+		return fmt.Errorf("upstream http proxy url must use http scheme")
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("upstream http proxy url host is required")
+	}
+	if parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		if err != nil || port <= 0 || port > 65535 {
+			return fmt.Errorf("upstream http proxy url port is invalid")
+		}
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return fmt.Errorf("upstream http proxy url path is not supported")
+	}
+
+	return nil
 }

@@ -19,8 +19,8 @@ import (
 	"github.com/WAY29/SimplePool/internal/group"
 	"github.com/WAY29/SimplePool/internal/node"
 	"github.com/WAY29/SimplePool/internal/runtime/singbox"
-	"github.com/WAY29/SimplePool/internal/settings"
 	"github.com/WAY29/SimplePool/internal/security"
+	"github.com/WAY29/SimplePool/internal/settings"
 	"github.com/WAY29/SimplePool/internal/store"
 	"github.com/google/uuid"
 )
@@ -64,21 +64,22 @@ type RuntimeManager interface {
 }
 
 type Options struct {
-	Tunnels        store.TunnelRepository
-	TunnelEvents   store.TunnelEventRepository
-	LatencySamples store.LatencySampleRepository
-	Groups         *group.Service
-	Nodes          store.NodeRepository
-	LogLevel       string
-	Cipher         Cipher
-	Prober         Prober
-	ProbeCacheTTL  time.Duration
-	Runtime        RuntimeManager
-	PortAllocator  PortAllocator
-	Renderer       Renderer
-	RuntimeRoot    string
-	Now            func() time.Time
-	Logger         *slog.Logger
+	Tunnels              store.TunnelRepository
+	TunnelEvents         store.TunnelEventRepository
+	LatencySamples       store.LatencySampleRepository
+	Groups               *group.Service
+	Nodes                store.NodeRepository
+	LogLevel             string
+	Cipher               Cipher
+	Prober               Prober
+	ProbeCacheTTL        time.Duration
+	Runtime              RuntimeManager
+	PortAllocator        PortAllocator
+	Renderer             Renderer
+	RuntimeRoot          string
+	UpstreamHTTPProxyURL string
+	Now                  func() time.Time
+	Logger               *slog.Logger
 }
 
 type Service struct {
@@ -176,7 +177,9 @@ func NewService(options Options) *Service {
 		options.PortAllocator = singbox.NewPortAllocator()
 	}
 	if options.Renderer == nil {
-		options.Renderer = singbox.NewConfigRenderer()
+		options.Renderer = singbox.NewConfigRenderer(singbox.ConfigRendererOptions{
+			UpstreamHTTPProxyURL: options.UpstreamHTTPProxyURL,
+		})
 	}
 	if options.Runtime == nil {
 		options.Runtime = NewRuntimeManager(RuntimeManagerOptions{Now: now})

@@ -58,6 +58,8 @@ cp .env.example .env
 - `SIMPLEPOOL_MASTER_KEY` 与 `SIMPLEPOOL_MASTER_KEY_FILE` 二选一，不能同时设置。
 - `.env.example` 中的主密钥仅用于本地演示，真实使用前必须替换。
 - `SIMPLEPOOL_LOG_LEVEL` 同时控制 SimplePool 自身日志和嵌入式 `sing-box` runtime 日志，包括各隧道的 `stdout.log` 与 `stderr.log`。
+- `SIMPLEPOOL_UPSTREAM_HTTP_PROXY_URL` 可选，格式必须是 `http://user:pass@host:port` 或 `http://host:port`。设置后，所有节点出站和节点探测都会统一先经过这个前置 HTTP 代理。
+- `SIMPLEPOOL_UPSTREAM_HTTP_PROXY_URL` 不影响订阅抓取；订阅刷新仍然直连。
 - 默认监听地址为 `127.0.0.1:7891`。
 
 ### 构建嵌入式前端并启动服务
@@ -68,6 +70,12 @@ go run -tags 'with_quic with_dhcp with_wireguard with_clash_api' ./cmd/simplepoo
 ```
 
 启动后直接访问 `http://127.0.0.1:7891`。
+
+如果你要统一给全部节点挂前置 HTTP 代理，可以在 `.env` 里增加：
+
+```bash
+SIMPLEPOOL_UPSTREAM_HTTP_PROXY_URL=http://user:pass@127.0.0.1:8080
+```
 
 如果要暴露 `openapi.json`，请使用调试模式启动：
 

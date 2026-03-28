@@ -214,6 +214,90 @@ func TestConfigRendererUsesLocalDNSResolverForDomainOutbounds(t *testing.T) {
 	}
 }
 
+func TestConfigRendererRoutesNodeOutboundsThroughUpstreamHTTPProxy(t *testing.T) {
+	renderer := singbox.NewConfigRenderer(singbox.ConfigRendererOptions{
+		UpstreamHTTPProxyURL: "http://user-1:pass-1@proxy.example.com:8080",
+	})
+	compiler := &singbox.ConfigCompiler{}
+
+	configJSON, err := renderer.Render(singbox.RenderInput{
+		ListenHost:       "127.0.0.1",
+		ListenPort:       18080,
+		ControllerPort:   19090,
+		ControllerSecret: "secret-1",
+		CurrentNodeID:    "1",
+		Nodes: []singbox.RuntimeNode{{
+			ID:             "1",
+			Name:           "HK-A",
+			Protocol:       "trojan",
+			Server:         "downloadcfpro.example.com",
+			ServerPort:     443,
+			Credential:     []byte(`{"password":"secret"}`),
+			TransportJSON:  `{}`,
+			TLSJSON:        `{"enabled":true,"server_name":"hk.example.com"}`,
+			RawPayloadJSON: `{}`,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if err := compiler.Check(configJSON); err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(configJSON, &config); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	outbounds := config["outbounds"].([]any)
+	if len(outbounds) < 3 {
+		t.Fatalf("len(outbounds) = %d, want at least 3", len(outbounds))
+	}
+
+	firstOutbound := outbounds[0].(map[string]any)
+	if firstOutbound["tag"] != "node-1" {
+		t.Fatalf("first outbound tag = %v, want node-1", firstOutbound["tag"])
+	}
+	if firstOutbound["detour"] != "upstream-http-proxy" {
+		t.Fatalf("node detour = %v, want upstream-http-proxy", firstOutbound["detour"])
+	}
+	if firstOutbound["domain_resolver"] != "local" {
+		t.Fatalf("outbound.domain_resolver = %v, want local", firstOutbound["domain_resolver"])
+	}
+
+	var upstream map[string]any
+	for _, item := range outbounds {
+		entry := item.(map[string]any)
+		if entry["tag"] == "upstream-http-proxy" {
+			upstream = entry
+			break
+		}
+	}
+	if upstream == nil {
+		t.Fatal("upstream http proxy outbound missing")
+	}
+	if upstream["type"] != "http" {
+		t.Fatalf("upstream.type = %v, want http", upstream["type"])
+	}
+	if upstream["server"] != "proxy.example.com" {
+		t.Fatalf("upstream.server = %v, want proxy.example.com", upstream["server"])
+	}
+	if int(upstream["server_port"].(float64)) != 8080 {
+		t.Fatalf("upstream.server_port = %v, want 8080", upstream["server_port"])
+	}
+	if upstream["username"] != "user-1" || upstream["password"] != "pass-1" {
+		t.Fatalf("upstream auth = %+v, want configured username/password", upstream)
+	}
+
+	dnsConfig := config["dns"].(map[string]any)
+	servers := dnsConfig["servers"].([]any)
+	server := servers[0].(map[string]any)
+	if _, exists := server["detour"]; exists {
+		t.Fatalf("dns server detour should be omitted, got %+v", server)
+	}
+}
+
 func TestConfigRendererCanDisableSelectorAndRouteToCurrentOutbound(t *testing.T) {
 	renderer := singbox.NewConfigRenderer()
 

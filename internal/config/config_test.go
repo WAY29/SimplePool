@@ -69,6 +69,36 @@ func TestLoadParsesDebugFlag(t *testing.T) {
 	}
 }
 
+func TestLoadParsesUpstreamHTTPProxyURL(t *testing.T) {
+	t.Setenv("SIMPLEPOOL_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	t.Setenv("SIMPLEPOOL_ADMIN_PASSWORD", "super-secret")
+	t.Setenv("SIMPLEPOOL_UPSTREAM_HTTP_PROXY_URL", "http://user-1:pass-1@proxy.example.com:8080")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.UpstreamHTTPProxyURL != "http://user-1:pass-1@proxy.example.com:8080" {
+		t.Fatalf("UpstreamHTTPProxyURL = %q, want configured proxy url", cfg.UpstreamHTTPProxyURL)
+	}
+}
+
+func TestLoadRejectsInvalidUpstreamHTTPProxyURL(t *testing.T) {
+	t.Setenv("SIMPLEPOOL_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	t.Setenv("SIMPLEPOOL_ADMIN_PASSWORD", "super-secret")
+	t.Setenv("SIMPLEPOOL_UPSTREAM_HTTP_PROXY_URL", "socks5://proxy.example.com:1080")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+
+	if !strings.Contains(err.Error(), "upstream http proxy") {
+		t.Fatalf("Load() error = %v, want upstream http proxy error", err)
+	}
+}
+
 func TestLoadMasterKeyFromFile(t *testing.T) {
 	root := t.TempDir()
 	keyFile := filepath.Join(root, "master.key")
