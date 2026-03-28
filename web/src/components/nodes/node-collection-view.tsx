@@ -203,7 +203,12 @@ export function NodeCollectionView({
                 >
                   {formatRegionFlag(nodeRegion(item))}
                 </span>
-                <p className="line-clamp-2 text-[0.95rem] font-semibold leading-6 text-white">{item.name}</p>
+                <div className="space-y-1">
+                  <p className="line-clamp-2 text-[0.95rem] font-semibold leading-6 text-white">{item.name}</p>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-[var(--muted-foreground)]">
+                    {item.protocol.toUpperCase()}
+                  </p>
+                </div>
               </div>
               {onProbe || onToggleEnabled ? (
                 <div className="flex items-center gap-2">

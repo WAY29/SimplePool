@@ -1312,6 +1312,8 @@ describe("App", () => {
     const user = userEvent.setup();
     expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
 
+    expect(screen.getByText("TROJAN")).toBeInTheDocument();
+
     const probeButton = await screen.findByRole("button", { name: "测试 香港-A1 延迟" });
     await user.click(probeButton);
     expect(probeButton).toBeDisabled();
