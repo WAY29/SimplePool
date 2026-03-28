@@ -2,6 +2,8 @@ package subscription_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -278,6 +280,27 @@ func TestSubscriptionCreateRejectsDuplicateFetchFingerprint(t *testing.T) {
 		URL:  "https://example.com/sub.txt",
 	}); err == nil {
 		t.Fatal("Create() duplicate error = nil, want error")
+	}
+}
+
+func TestHTTPFetcherSetsSubscriptionUserAgent(t *testing.T) {
+	expectedUA := "sing-box-windows/1.0 (sing-box; compatible; Windows NT 10.0)"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("User-Agent"); got != expectedUA {
+			t.Fatalf("User-Agent = %q, want %q", got, expectedUA)
+		}
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	fetcher := subscription.NewHTTPFetcher(time.Second)
+	body, err := fetcher.Fetch(context.Background(), subscription.FetchRequest{URL: server.URL})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("Fetch() body = %q, want ok", string(body))
 	}
 }
 

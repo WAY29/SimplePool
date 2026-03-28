@@ -24,6 +24,8 @@ var (
 	ErrInvalidURL      = errors.New("subscription: invalid url")
 )
 
+const subscriptionUserAgent = "sing-box-windows/1.0 (sing-box; compatible; Windows NT 10.0)"
+
 type Cipher interface {
 	Encrypt(plaintext, aad []byte) ([]byte, []byte, error)
 	Decrypt(nonce, ciphertext, aad []byte) ([]byte, error)
@@ -358,6 +360,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, request FetchRequest) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
+	httpRequest.Header.Set("User-Agent", subscriptionUserAgent)
 	response, err := f.client.Do(httpRequest)
 	if err != nil {
 		return nil, err
