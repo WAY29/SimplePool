@@ -64,7 +64,15 @@ func registerSubscriptionRoutes(engine *gin.Engine, authService *auth.Service, s
 			handleSubscriptionError(c, err)
 			return
 		}
-		c.JSON(http.StatusCreated, item)
+
+		_, _ = service.Refresh(c.Request.Context(), item.ID, true)
+
+		refreshed, err := service.Get(c.Request.Context(), item.ID)
+		if err != nil {
+			handleSubscriptionError(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, refreshed)
 	})
 	// @Summary 更新订阅源
 	// @Tags subscriptions

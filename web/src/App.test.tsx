@@ -2,7 +2,19 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import App from "./App";
+
+vi.mock("sonner", async () => {
+  const actual = await vi.importActual<typeof import("sonner")>("sonner");
+  return {
+    ...actual,
+    toast: {
+      success: vi.fn(),
+      error: vi.fn(),
+    },
+  };
+});
 
 function jsonResponse(status: number, payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -24,6 +36,16 @@ function renderApp() {
 type FetchMockOptions = {
   nodes?: Array<Record<string, unknown>>;
   subscriptions?: Array<Record<string, unknown>>;
+  subscriptionCreateResults?: Record<
+    string,
+    {
+      upserted_nodes?: Array<Record<string, unknown>>;
+      deleted_node_ids?: string[];
+      updated_at?: string;
+      last_refresh_at?: string | null;
+      last_error?: string;
+    }
+  >;
   subscriptionRefreshResults?: Record<
     string,
     {
@@ -145,6 +167,7 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
   ]);
   const probeDelays = options.probeDelays ?? {};
   const probeResults = options.probeResults ?? {};
+  const subscriptionCreateResults = options.subscriptionCreateResults ?? {};
   const subscriptionRefreshResults = options.subscriptionRefreshResults ?? {};
   const tunnelActionBehaviors = options.tunnelActionBehaviors ?? {};
   const groupMemberStreamEvents = options.groupMemberStreamEvents ?? {};
@@ -396,19 +419,27 @@ function installAuthenticatedFetchMock(options: FetchMockOptions = {}) {
     }
     if (url.endsWith("/api/subscriptions") && init?.method === "POST") {
       const payload = init.body ? JSON.parse(String(init.body)) as { name: string; url: string } : { name: "", url: "" };
+      const subscriptionID = `subscription-${subscriptions.length + 1}`;
+      const createPayload = subscriptionCreateResults[subscriptionID];
+      const upsertedNodes = structuredClone(createPayload?.upserted_nodes ?? []);
+      const deletedNodeIDs = createPayload?.deleted_node_ids ?? [];
+      nodes = upsertNodes(
+        nodes.filter((item) => !deletedNodeIDs.includes(String(item.id))),
+        upsertedNodes,
+      );
       const created = {
-        id: `subscription-${subscriptions.length + 1}`,
+        id: subscriptionID,
         name: payload.name,
         fetch_fingerprint: `fingerprint-${subscriptions.length + 1}`,
         enabled: true,
-        last_refresh_at: null,
-        last_error: "",
+        last_refresh_at: createPayload?.last_refresh_at ?? null,
+        last_error: createPayload?.last_error ?? "",
         has_url: Boolean(payload.url),
         created_at: "2026-03-26T10:07:00Z",
-        updated_at: "2026-03-26T10:07:00Z",
+        updated_at: createPayload?.updated_at ?? "2026-03-26T10:07:00Z",
       };
       subscriptions = [created, ...subscriptions];
-      return jsonResponse(200, created);
+      return jsonResponse(201, created);
     }
     const subscriptionRefreshMatch = url.match(/\/api\/subscriptions\/([^/]+)\/refresh$/);
     if (subscriptionRefreshMatch && init?.method === "POST") {
@@ -991,6 +1022,114 @@ describe("App", () => {
     });
     expect(countFetchCalls(fetchMock, /\/api\/subscriptions\/subscription-2$/, "DELETE")).toBe(1);
     expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  it("节点页创建订阅后自动重载节点，不再额外调用手动刷新接口", async () => {
+    window.history.pushState({}, "", "/nodes");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      subscriptions: [
+        {
+          id: "subscription-1",
+          name: "原始订阅",
+          fetch_fingerprint: "fp-1",
+          enabled: true,
+          last_refresh_at: null,
+          last_error: "",
+          has_url: true,
+          created_at: "2026-03-26T09:07:00Z",
+          updated_at: "2026-03-26T09:07:00Z",
+        },
+      ],
+      subscriptionCreateResults: {
+        "subscription-2": {
+          last_refresh_at: "2026-03-26T10:08:00Z",
+          updated_at: "2026-03-26T10:08:00Z",
+          upserted_nodes: [
+            {
+              id: "node-2",
+              name: "自动拉取-TR",
+              source_kind: "subscription",
+              subscription_source_id: "subscription-2",
+              protocol: "trojan",
+              server: "192.168.1.202",
+              server_port: 443,
+              transport_json: "{}",
+              tls_json: "{}",
+              raw_payload_json: "{}",
+              enabled: true,
+              last_latency_ms: null,
+              last_status: "unknown",
+              last_checked_at: null,
+              has_credential: true,
+              created_at: "2026-03-26T10:08:00Z",
+              updated_at: "2026-03-26T10:08:00Z",
+            },
+          ],
+        },
+      },
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "添加订阅" }));
+    await user.type(screen.getByLabelText("名称"), "新增订阅");
+    await user.type(screen.getByLabelText("订阅 URL"), "https://example.com/sub.txt");
+    await user.click(screen.getByRole("button", { name: "创建订阅" }));
+
+    expect(await screen.findByRole("button", { name: "筛选 新增订阅" })).toBeInTheDocument();
+    expect(await screen.findByText("自动拉取-TR")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(countFetchCalls(fetchMock, /\/api\/nodes$/, "GET")).toBeGreaterThanOrEqual(2);
+    });
+    expect(countFetchCalls(fetchMock, /\/api\/subscriptions\/subscription-2\/refresh$/, "POST")).toBe(0);
+  });
+
+  it("节点页创建订阅后若首刷失败则保留订阅并提示失败", async () => {
+    window.history.pushState({}, "", "/nodes");
+    window.localStorage.setItem("simplepool.session_token", "token-1");
+    const fetchMock = installAuthenticatedFetchMock({
+      subscriptions: [
+        {
+          id: "subscription-1",
+          name: "原始订阅",
+          fetch_fingerprint: "fp-1",
+          enabled: true,
+          last_refresh_at: null,
+          last_error: "",
+          has_url: true,
+          created_at: "2026-03-26T09:07:00Z",
+          updated_at: "2026-03-26T09:07:00Z",
+        },
+      ],
+      subscriptionCreateResults: {
+        "subscription-2": {
+          last_error: "dial tcp timeout",
+          updated_at: "2026-03-26T10:08:00Z",
+        },
+      },
+    });
+
+    renderApp();
+
+    const user = userEvent.setup();
+    expect(await screen.findByRole("heading", { name: "节点池" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "添加订阅" }));
+    await user.type(screen.getByLabelText("名称"), "失败订阅");
+    await user.type(screen.getByLabelText("订阅 URL"), "https://example.com/sub.txt");
+    await user.click(screen.getByRole("button", { name: "创建订阅" }));
+
+    expect(await screen.findByRole("button", { name: "筛选 失败订阅" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(countFetchCalls(fetchMock, /\/api\/nodes$/, "GET")).toBeGreaterThanOrEqual(2);
+    });
+    expect(countFetchCalls(fetchMock, /\/api\/subscriptions\/subscription-2\/refresh$/, "POST")).toBe(0);
+    expect(toast.success).toHaveBeenCalledWith("订阅已创建");
+    expect(toast.error).toHaveBeenCalledWith("首次刷新失败：dial tcp timeout");
   });
 
   it("节点页批量探测仅作用于当前订阅筛选并跳过禁用节点", async () => {

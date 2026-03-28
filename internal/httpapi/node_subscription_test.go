@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -138,6 +139,108 @@ func TestNodeAndSubscriptionRoutes(t *testing.T) {
 	}
 }
 
+func TestCreateSubscriptionAutoRefreshesNodes(t *testing.T) {
+	router, token := newProtectedRouter(t)
+
+	createSubResp := performJSON(t, router, http.MethodPost, "/api/subscriptions", token, map[string]any{
+		"name": "sub-a",
+		"url":  "https://example.com/sub.txt",
+	})
+	if createSubResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/subscriptions status = %d, want 201", createSubResp.Code)
+	}
+
+	var created subscription.View
+	if err := json.Unmarshal(createSubResp.Body.Bytes(), &created); err != nil {
+		t.Fatalf("json.Unmarshal(create) error = %v", err)
+	}
+	if created.LastRefreshAt == nil {
+		t.Fatal("LastRefreshAt = nil, want initial auto refresh timestamp")
+	}
+	if created.LastError != "" {
+		t.Fatalf("LastError = %q, want empty", created.LastError)
+	}
+
+	listNodesResp := perform(t, router, http.MethodGet, "/api/nodes", token, nil)
+	if listNodesResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/nodes status = %d, want 200", listNodesResp.Code)
+	}
+
+	var nodes []node.View
+	if err := json.Unmarshal(listNodesResp.Body.Bytes(), &nodes); err != nil {
+		t.Fatalf("json.Unmarshal(nodes) error = %v", err)
+	}
+	var subscriptionNodes []node.View
+	for _, item := range nodes {
+		if item.SubscriptionSourceID != nil && *item.SubscriptionSourceID == created.ID {
+			subscriptionNodes = append(subscriptionNodes, item)
+		}
+	}
+	if len(subscriptionNodes) != 1 {
+		t.Fatalf("len(subscriptionNodes) = %d, want 1", len(subscriptionNodes))
+	}
+	if subscriptionNodes[0].Name != "TR-1" {
+		t.Fatalf("Name = %q, want TR-1", subscriptionNodes[0].Name)
+	}
+}
+
+func TestCreateSubscriptionRefreshFailureKeepsSubscription(t *testing.T) {
+	router, token := newProtectedRouterWithFetcher(t, &httpFakeFetcher{err: errors.New("dial tcp timeout")})
+
+	createSubResp := performJSON(t, router, http.MethodPost, "/api/subscriptions", token, map[string]any{
+		"name": "sub-a",
+		"url":  "https://example.com/sub.txt",
+	})
+	if createSubResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/subscriptions status = %d, want 201", createSubResp.Code)
+	}
+
+	var created subscription.View
+	if err := json.Unmarshal(createSubResp.Body.Bytes(), &created); err != nil {
+		t.Fatalf("json.Unmarshal(create) error = %v", err)
+	}
+	if created.LastRefreshAt != nil {
+		t.Fatalf("LastRefreshAt = %v, want nil", created.LastRefreshAt)
+	}
+	if created.LastError == "" {
+		t.Fatal("LastError empty, want initial refresh error")
+	}
+
+	listSubResp := perform(t, router, http.MethodGet, "/api/subscriptions", token, nil)
+	if listSubResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/subscriptions status = %d, want 200", listSubResp.Code)
+	}
+
+	var subscriptions []subscription.View
+	if err := json.Unmarshal(listSubResp.Body.Bytes(), &subscriptions); err != nil {
+		t.Fatalf("json.Unmarshal(subscriptions) error = %v", err)
+	}
+	if len(subscriptions) != 1 {
+		t.Fatalf("len(subscriptions) = %d, want 1", len(subscriptions))
+	}
+	if subscriptions[0].ID != created.ID {
+		t.Fatalf("subscriptions[0].ID = %q, want %q", subscriptions[0].ID, created.ID)
+	}
+	if subscriptions[0].LastError == "" {
+		t.Fatal("subscriptions[0].LastError empty, want persisted initial refresh error")
+	}
+
+	listNodesResp := perform(t, router, http.MethodGet, "/api/nodes", token, nil)
+	if listNodesResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/nodes status = %d, want 200", listNodesResp.Code)
+	}
+
+	var nodes []node.View
+	if err := json.Unmarshal(listNodesResp.Body.Bytes(), &nodes); err != nil {
+		t.Fatalf("json.Unmarshal(nodes) error = %v", err)
+	}
+	for _, item := range nodes {
+		if item.SubscriptionSourceID != nil && *item.SubscriptionSourceID == created.ID {
+			t.Fatalf("found subscription node %q for failed initial refresh, want none", item.ID)
+		}
+	}
+}
+
 func TestSettingsRoutes(t *testing.T) {
 	router, token := newProtectedRouter(t)
 
@@ -180,6 +283,14 @@ func TestSettingsRoutes(t *testing.T) {
 func newProtectedRouter(t *testing.T) (http.Handler, string) {
 	t.Helper()
 
+	return newProtectedRouterWithFetcher(t, &httpFakeFetcher{
+		payload: "trojan://pass@example.com:443?security=tls#TR-1",
+	})
+}
+
+func newProtectedRouterWithFetcher(t *testing.T, fetcher subscription.Fetcher) (http.Handler, string) {
+	t.Helper()
+
 	db, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "node-sub-http.db"))
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -219,9 +330,7 @@ func newProtectedRouter(t *testing.T) (http.Handler, string) {
 		Nodes:               repos.Nodes,
 		LatencySamples:      repos.LatencySamples,
 		Cipher:              cipher,
-		Fetcher: &httpFakeFetcher{
-			payload: "trojan://pass@example.com:443?security=tls#TR-1",
-		},
+		Fetcher:             fetcher,
 		Prober:        prober,
 		Now:           now,
 		ProbeCacheTTL: 30 * time.Second,
@@ -293,8 +402,12 @@ func (p *httpFakeProber) Probe(ctx context.Context, target node.ProbeTarget) (no
 
 type httpFakeFetcher struct {
 	payload string
+	err     error
 }
 
 func (f *httpFakeFetcher) Fetch(ctx context.Context, request subscription.FetchRequest) ([]byte, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	return []byte(f.payload), nil
 }

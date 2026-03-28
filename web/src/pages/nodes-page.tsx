@@ -367,7 +367,17 @@ export function NodesPage() {
           }),
         );
         setSubscriptions((current) => [created, ...current]);
-        toast.success("订阅已创建");
+        setSubscriptionFilter(created.id);
+        setShowSubscriptionForm(false);
+        await load();
+        await metrics.refresh();
+        if (created.last_error) {
+          toast.success("订阅已创建");
+          toast.error(`首次刷新失败：${created.last_error}`);
+          return;
+        }
+        toast.success("订阅已创建并已自动刷新");
+        return;
       }
       setShowSubscriptionForm(false);
     } catch (error) {
