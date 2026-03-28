@@ -1,4 +1,4 @@
-import { GitBranch, LogOut, Radio } from "lucide-react";
+import { GitBranch, LogOut, Radio, Settings2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { IconButton } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { useShellMetrics } from "@/hooks/use-shell-metrics";
 const navigation = [
   { to: "/node-groups", label: "节点组", icon: GitBranch },
   { to: "/nodes", label: "节点", icon: Radio },
+  { to: "/settings", label: "设置", icon: Settings2 },
 ];
 
 const routeMeta: Record<
@@ -24,11 +25,17 @@ const routeMeta: Record<
   "/node-groups": {
     chromeTitle: "SimplePool Node Groups",
   },
+  "/settings": {
+    chromeTitle: "SimplePool Settings",
+  },
 };
 
 function topRoute(pathname: string) {
   if (pathname.startsWith("/node-groups")) {
     return "/node-groups";
+  }
+  if (pathname.startsWith("/settings")) {
+    return "/settings";
   }
   return pathname in routeMeta ? pathname : "/nodes";
 }

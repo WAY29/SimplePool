@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/WAY29/SimplePool/internal/domain"
+	"github.com/WAY29/SimplePool/internal/settings"
 	"github.com/WAY29/SimplePool/internal/store"
 	"github.com/google/uuid"
 )
@@ -323,6 +324,9 @@ func (s *Service) ProbeByID(ctx context.Context, id string, force bool) (ProbeRe
 	if err != nil {
 		result.Success = false
 		result.ErrorMessage = err.Error()
+	}
+	if result.TestURL == "" {
+		result.TestURL = settings.DefaultProbeTestURL
 	}
 	now := s.now().UTC()
 	result.CheckedAt = &now

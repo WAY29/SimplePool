@@ -110,6 +110,54 @@ func TestSessionRepositoryRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAppSettingRepositoryRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	repos := newTestRepos(t)
+
+	now := time.Date(2026, 3, 26, 10, 0, 0, 0, time.UTC)
+	setting := &domain.AppSetting{
+		Key:       "probe_test_url",
+		Value:     "http://cp.cloudflare.com/generate_204",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := repos.AppSettings.Upsert(ctx, setting); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	got, err := repos.AppSettings.GetByKey(ctx, setting.Key)
+	if err != nil {
+		t.Fatalf("GetByKey() error = %v", err)
+	}
+	if got.Value != setting.Value {
+		t.Fatalf("Value = %q, want %q", got.Value, setting.Value)
+	}
+	if !got.CreatedAt.Equal(now) {
+		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, now)
+	}
+
+	setting.Value = "https://www.gstatic.com/generate_204"
+	setting.UpdatedAt = now.Add(time.Hour)
+	if err := repos.AppSettings.Upsert(ctx, setting); err != nil {
+		t.Fatalf("Upsert() update error = %v", err)
+	}
+
+	updated, err := repos.AppSettings.GetByKey(ctx, setting.Key)
+	if err != nil {
+		t.Fatalf("GetByKey() updated error = %v", err)
+	}
+	if updated.Value != setting.Value {
+		t.Fatalf("updated Value = %q, want %q", updated.Value, setting.Value)
+	}
+	if !updated.CreatedAt.Equal(now) {
+		t.Fatalf("updated CreatedAt = %v, want original %v", updated.CreatedAt, now)
+	}
+	if !updated.UpdatedAt.Equal(setting.UpdatedAt) {
+		t.Fatalf("updated UpdatedAt = %v, want %v", updated.UpdatedAt, setting.UpdatedAt)
+	}
+}
+
 func TestSubscriptionSourceRepositoryRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	repos := newTestRepos(t)

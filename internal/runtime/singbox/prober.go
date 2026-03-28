@@ -18,37 +18,47 @@ import (
 
 	"github.com/WAY29/SimplePool/internal/logging"
 	"github.com/WAY29/SimplePool/internal/node"
+	"github.com/WAY29/SimplePool/internal/settings"
 )
 
 type Prober struct {
-	testURL  string
-	timeout  time.Duration
-	logLevel string
+	resolveTestURL func(context.Context) string
+	timeout        time.Duration
+	logLevel       string
 }
 
 func NewProber(testURL string, timeout time.Duration, logLevel string) *Prober {
-	if testURL == "" {
-		testURL = "https://cloudflare.com/cdn-cgi/trace"
+	return NewDynamicProber(func(context.Context) string {
+		return testURL
+	}, timeout, logLevel)
+}
+
+func NewDynamicProber(resolveTestURL func(context.Context) string, timeout time.Duration, logLevel string) *Prober {
+	if resolveTestURL == nil {
+		resolveTestURL = func(context.Context) string {
+			return settings.DefaultProbeTestURL
+		}
 	}
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
 	return &Prober{
-		testURL:  testURL,
-		timeout:  timeout,
-		logLevel: logging.NormalizeLevel(logLevel),
+		resolveTestURL: resolveTestURL,
+		timeout:        timeout,
+		logLevel:       logging.NormalizeLevel(logLevel),
 	}
 }
 
 func (p *Prober) Probe(ctx context.Context, target node.ProbeTarget) (node.ProbeResult, error) {
+	testURL := p.testURL(ctx)
 	inboundPort, err := allocatePort()
 	if err != nil {
-		return node.ProbeResult{TestURL: p.testURL}, err
+		return node.ProbeResult{TestURL: testURL}, err
 	}
 
 	configJSON, err := p.buildConfig(target, inboundPort)
 	if err != nil {
-		return node.ProbeResult{TestURL: p.testURL}, err
+		return node.ProbeResult{TestURL: testURL}, err
 	}
 
 	singCtx, cancel := context.WithCancel(include.Context(context.Background()))
@@ -56,7 +66,7 @@ func (p *Prober) Probe(ctx context.Context, target node.ProbeTarget) (node.Probe
 
 	options, err := sbjson.UnmarshalExtendedContext[option.Options](singCtx, configJSON)
 	if err != nil {
-		return node.ProbeResult{TestURL: p.testURL}, err
+		return node.ProbeResult{TestURL: testURL}, err
 	}
 
 	instance, err := sbbox.New(sbbox.Options{
@@ -64,12 +74,12 @@ func (p *Prober) Probe(ctx context.Context, target node.ProbeTarget) (node.Probe
 		Options: options,
 	})
 	if err != nil {
-		return node.ProbeResult{TestURL: p.testURL}, err
+		return node.ProbeResult{TestURL: testURL}, err
 	}
 	defer instance.Close()
 
 	if err := instance.Start(); err != nil {
-		return node.ProbeResult{TestURL: p.testURL}, err
+		return node.ProbeResult{TestURL: testURL}, err
 	}
 
 	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", inboundPort))
@@ -80,16 +90,16 @@ func (p *Prober) Probe(ctx context.Context, target node.ProbeTarget) (node.Probe
 		},
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.testURL, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
 	if err != nil {
-		return node.ProbeResult{TestURL: p.testURL}, err
+		return node.ProbeResult{TestURL: testURL}, err
 	}
 
 	startedAt := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
 		return node.ProbeResult{
-			TestURL:      p.testURL,
+			TestURL:      testURL,
 			Success:      false,
 			ErrorMessage: err.Error(),
 		}, nil
@@ -98,7 +108,7 @@ func (p *Prober) Probe(ctx context.Context, target node.ProbeTarget) (node.Probe
 	_, _ = io.Copy(io.Discard, response.Body)
 
 	result := node.ProbeResult{
-		TestURL:   p.testURL,
+		TestURL:   testURL,
 		Success:   response.StatusCode >= 200 && response.StatusCode < 400,
 		LatencyMS: time.Since(startedAt).Milliseconds(),
 	}
@@ -106,6 +116,13 @@ func (p *Prober) Probe(ctx context.Context, target node.ProbeTarget) (node.Probe
 		result.ErrorMessage = response.Status
 	}
 	return result, nil
+}
+
+func (p *Prober) testURL(ctx context.Context) string {
+	if p == nil || p.resolveTestURL == nil {
+		return settings.DefaultProbeTestURL
+	}
+	return settings.NormalizeProbeTestURL(p.resolveTestURL(ctx))
 }
 
 func (p *Prober) buildConfig(target node.ProbeTarget, inboundPort int) ([]byte, error) {

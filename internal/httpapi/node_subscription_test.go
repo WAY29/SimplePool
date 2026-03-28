@@ -14,6 +14,7 @@ import (
 	"github.com/WAY29/SimplePool/internal/group"
 	"github.com/WAY29/SimplePool/internal/httpapi"
 	"github.com/WAY29/SimplePool/internal/node"
+	"github.com/WAY29/SimplePool/internal/settings"
 	"github.com/WAY29/SimplePool/internal/store/sqlite"
 	"github.com/WAY29/SimplePool/internal/subscription"
 )
@@ -137,6 +138,45 @@ func TestNodeAndSubscriptionRoutes(t *testing.T) {
 	}
 }
 
+func TestSettingsRoutes(t *testing.T) {
+	router, token := newProtectedRouter(t)
+
+	getResp := perform(t, router, http.MethodGet, "/api/settings/probe", token, nil)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/settings/probe status = %d, want 200", getResp.Code)
+	}
+
+	var initial map[string]any
+	if err := json.Unmarshal(getResp.Body.Bytes(), &initial); err != nil {
+		t.Fatalf("json.Unmarshal(initial) error = %v", err)
+	}
+	if got := initial["test_url"]; got != settings.DefaultProbeTestURL {
+		t.Fatalf("initial test_url = %v, want %q", got, settings.DefaultProbeTestURL)
+	}
+
+	updateResp := performJSON(t, router, http.MethodPut, "/api/settings/probe", token, map[string]any{
+		"test_url": "https://www.gstatic.com/generate_204",
+	})
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("PUT /api/settings/probe status = %d, want 200", updateResp.Code)
+	}
+
+	var updated map[string]any
+	if err := json.Unmarshal(updateResp.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("json.Unmarshal(updated) error = %v", err)
+	}
+	if got := updated["test_url"]; got != "https://www.gstatic.com/generate_204" {
+		t.Fatalf("updated test_url = %v, want gstatic", got)
+	}
+
+	invalidResp := performJSON(t, router, http.MethodPut, "/api/settings/probe", token, map[string]any{
+		"test_url": "ftp://example.com",
+	})
+	if invalidResp.Code != http.StatusBadRequest {
+		t.Fatalf("PUT /api/settings/probe invalid status = %d, want 400", invalidResp.Code)
+	}
+}
+
 func newProtectedRouter(t *testing.T) (http.Handler, string) {
 	t.Helper()
 
@@ -191,6 +231,10 @@ func newProtectedRouter(t *testing.T) (http.Handler, string) {
 		Nodes:  repos.Nodes,
 		Now:    now,
 	})
+	settingsService := settings.NewService(settings.Options{
+		AppSettings: repos.AppSettings,
+		Now:         now,
+	})
 	tunnelService := buildTunnelServiceForHTTPTests(repos, cipher, now, t.TempDir())
 	if err := seedTunnelFixturesForHTTPTests(repos, cipher); err != nil {
 		t.Fatalf("seedTunnelFixturesForHTTPTests() error = %v", err)
@@ -200,6 +244,7 @@ func newProtectedRouter(t *testing.T) (http.Handler, string) {
 		AuthService:         authService,
 		GroupService:        groupService,
 		NodeService:         nodeService,
+		SettingsService:     settingsService,
 		SubscriptionService: subscriptionService,
 		TunnelService:       tunnelService,
 	})

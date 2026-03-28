@@ -36,6 +36,7 @@ func TestMigrateCreatesAllTablesAndIsIdempotent(t *testing.T) {
 		"schema_migrations",
 		"admin_users",
 		"sessions",
+		"app_settings",
 		"subscription_sources",
 		"nodes",
 		"groups",

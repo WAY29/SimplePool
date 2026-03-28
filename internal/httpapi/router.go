@@ -12,6 +12,7 @@ import (
 	"github.com/WAY29/SimplePool/internal/group"
 	"github.com/WAY29/SimplePool/internal/httpapi/webui"
 	"github.com/WAY29/SimplePool/internal/node"
+	"github.com/WAY29/SimplePool/internal/settings"
 	"github.com/WAY29/SimplePool/internal/subscription"
 	"github.com/WAY29/SimplePool/internal/tunnel"
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,7 @@ type Options struct {
 	Debug               bool
 	GroupService        *group.Service
 	NodeService         *node.Service
+	SettingsService     *settings.Service
 	SubscriptionService *subscription.Service
 	TunnelService       *tunnel.Service
 }
@@ -67,6 +69,9 @@ func NewRouter(options Options) *gin.Engine {
 	registerAuthRoutes(engine, options.AuthService)
 	if options.NodeService != nil {
 		registerNodeRoutes(engine, options.AuthService, options.NodeService)
+	}
+	if options.SettingsService != nil {
+		registerSettingsRoutes(engine, options.AuthService, options.SettingsService)
 	}
 	if options.SubscriptionService != nil {
 		registerSubscriptionRoutes(engine, options.AuthService, options.SubscriptionService)

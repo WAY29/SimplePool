@@ -78,6 +78,13 @@ export type ProbeBatchResult = ProbeResult & {
   node_id: string;
 };
 
+export type ProbeConfigView = {
+  test_url: string;
+  default_test_url: string;
+  preset_urls: string[];
+  updated_at?: string | null;
+};
+
 export type SubscriptionView = {
   id: string;
   name: string;
@@ -286,6 +293,18 @@ export const api = {
       return request<void>("/api/auth/logout", {
         method: "POST",
         token,
+      });
+    },
+  },
+  settings: {
+    probe(token: string) {
+      return request<ProbeConfigView>("/api/settings/probe", { token });
+    },
+    updateProbe(token: string, input: { test_url: string }) {
+      return request<ProbeConfigView>("/api/settings/probe", {
+        method: "PUT",
+        token,
+        body: input,
       });
     },
   },

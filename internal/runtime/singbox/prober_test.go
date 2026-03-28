@@ -1,11 +1,33 @@
 package singbox
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/WAY29/SimplePool/internal/node"
+	"github.com/WAY29/SimplePool/internal/settings"
 )
+
+func TestProberUsesDefaultTestURLWhenResolverReturnsEmpty(t *testing.T) {
+	prober := NewDynamicProber(func(context.Context) string {
+		return ""
+	}, 0, "info")
+
+	if got := prober.testURL(context.Background()); got != settings.DefaultProbeTestURL {
+		t.Fatalf("testURL() = %q, want %q", got, settings.DefaultProbeTestURL)
+	}
+}
+
+func TestProberUsesDynamicResolvedTestURL(t *testing.T) {
+	prober := NewDynamicProber(func(context.Context) string {
+		return "https://example.com/generate_204"
+	}, 0, "info")
+
+	if got := prober.testURL(context.Background()); got != "https://example.com/generate_204" {
+		t.Fatalf("testURL() = %q, want dynamic URL", got)
+	}
+}
 
 func TestProberBuildConfigUsesNormalizedLogLevel(t *testing.T) {
 	prober := NewProber("https://cloudflare.com/cdn-cgi/trace", 0, "warning")

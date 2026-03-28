@@ -173,6 +173,26 @@
         },
         "type": "object"
       },
+      "github_com_WAY29_SimplePool_internal_settings.ProbeConfigView": {
+        "properties": {
+          "default_test_url": {
+            "type": "string"
+          },
+          "preset_urls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "test_url": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "github_com_WAY29_SimplePool_internal_subscription.RefreshResult": {
         "properties": {
           "deleted_count": {
@@ -478,6 +498,17 @@
           "protocol",
           "server",
           "server_port"
+        ],
+        "type": "object"
+      },
+      "internal_httpapi.probeSettingsUpdateRequest": {
+        "properties": {
+          "test_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "test_url"
         ],
         "type": "object"
       },
@@ -1664,6 +1695,116 @@
         "summary": "探测单个节点",
         "tags": [
           "nodes"
+        ]
+      }
+    },
+    "/api/settings/probe": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/github_com_WAY29_SimplePool_internal_settings.ProbeConfigView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/internal_httpapi.errorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/internal_httpapi.errorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "获取测速设置",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/internal_httpapi.probeSettingsUpdateRequest"
+              }
+            }
+          },
+          "description": "测速设置",
+          "required": true,
+          "x-originalParamName": "request"
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/github_com_WAY29_SimplePool_internal_settings.ProbeConfigView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/internal_httpapi.errorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/internal_httpapi.errorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/internal_httpapi.errorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "更新测速设置",
+        "tags": [
+          "settings"
         ]
       }
     },

@@ -39,6 +39,13 @@ type Session struct {
 	LastSeenAt time.Time
 }
 
+type AppSetting struct {
+	Key       string
+	Value     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type SubscriptionSource struct {
 	ID               string
 	Name             string

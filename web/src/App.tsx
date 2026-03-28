@@ -5,6 +5,7 @@ import { Toaster } from "sonner";
 import { LoginPage } from "@/pages/login-page";
 import { NodesPage } from "@/pages/nodes-page";
 import { NotFoundPage } from "@/pages/not-found-page";
+import { SettingsPage } from "@/pages/settings-page";
 import { WorkspacePage } from "@/pages/workspace-page";
 import { ShellMetricsProvider } from "@/hooks/use-shell-metrics";
 import { SessionProvider, useSession } from "@/hooks/use-session";
@@ -32,6 +33,7 @@ function AppRoutes() {
         <Route element={<Navigate replace to={nodeGroupsRoute} />} index />
         <Route element={<WorkspacePage />} path="node-groups" />
         <Route element={<NodesPage />} path="nodes" />
+        <Route element={<SettingsPage />} path="settings" />
         <Route element={<NotFoundPage />} path="*" />
       </Route>
     </Routes>

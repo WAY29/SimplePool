@@ -28,6 +28,11 @@ type SessionRepository interface {
 	DeleteExpired(ctx context.Context, before time.Time) (int64, error)
 }
 
+type AppSettingRepository interface {
+	Upsert(ctx context.Context, setting *domain.AppSetting) error
+	GetByKey(ctx context.Context, key string) (*domain.AppSetting, error)
+}
+
 type SubscriptionSourceRepository interface {
 	Create(ctx context.Context, source *domain.SubscriptionSource) error
 	Update(ctx context.Context, source *domain.SubscriptionSource) error

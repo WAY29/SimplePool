@@ -19,6 +19,7 @@ import (
 	"github.com/WAY29/SimplePool/internal/logging"
 	"github.com/WAY29/SimplePool/internal/node"
 	"github.com/WAY29/SimplePool/internal/runtime/singbox"
+	"github.com/WAY29/SimplePool/internal/settings"
 	"github.com/WAY29/SimplePool/internal/store/sqlite"
 	"github.com/WAY29/SimplePool/internal/subscription"
 	"github.com/WAY29/SimplePool/internal/tunnel"
@@ -76,9 +77,20 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 	if now == nil {
 		now = time.Now
 	}
+	settingsService := settings.NewService(settings.Options{
+		AppSettings: repos.AppSettings,
+		Now:         now,
+	})
 	prober := deps.NodeProber
 	if prober == nil {
-		prober = singbox.NewProber("https://cloudflare.com/cdn-cgi/trace", 3*time.Second, cfg.LogLevel)
+		prober = singbox.NewDynamicProber(func(ctx context.Context) string {
+			view, err := settingsService.GetProbeConfig(ctx)
+			if err != nil {
+				logger.Warn("load probe settings failed, use default test url", "error", err)
+				return settings.DefaultProbeTestURL
+			}
+			return view.TestURL
+		}, 3*time.Second, cfg.LogLevel)
 	}
 	fetcher := deps.SubscriptionFetcher
 	if fetcher == nil {
@@ -147,6 +159,7 @@ func NewWithDependencies(ctx context.Context, cfg config.Config, deps Dependenci
 		Debug:               cfg.Debug,
 		GroupService:        groupService,
 		NodeService:         nodeService,
+		SettingsService:     settingsService,
 		SubscriptionService: subscriptionService,
 		TunnelService:       tunnelService,
 	})

@@ -19,6 +19,7 @@ import (
 	"github.com/WAY29/SimplePool/internal/group"
 	"github.com/WAY29/SimplePool/internal/node"
 	"github.com/WAY29/SimplePool/internal/runtime/singbox"
+	"github.com/WAY29/SimplePool/internal/settings"
 	"github.com/WAY29/SimplePool/internal/security"
 	"github.com/WAY29/SimplePool/internal/store"
 	"github.com/google/uuid"
@@ -874,7 +875,7 @@ func (s *Service) probeCandidate(ctx context.Context, tunnelID string, candidate
 	}
 	checkedAt := s.now().UTC()
 	if result.TestURL == "" {
-		result.TestURL = "https://cloudflare.com/cdn-cgi/trace"
+		result.TestURL = settings.DefaultProbeTestURL
 	}
 	if ctx.Err() != nil {
 		return
