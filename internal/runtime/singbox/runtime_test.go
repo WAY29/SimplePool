@@ -18,6 +18,7 @@ import (
 	"github.com/WAY29/SimplePool/internal/domain"
 	"github.com/WAY29/SimplePool/internal/runtime/singbox"
 	sbLog "github.com/sagernet/sing-box/log"
+	"github.com/sagernet/sing/service/filemanager"
 )
 
 func TestConfigRendererRendersHTTPInboundSelectorAndClashAPI(t *testing.T) {
@@ -574,6 +575,61 @@ func TestSupervisorStartDetachesRuntimeLifetimeFromCallerContext(t *testing.T) {
 	case <-factory.ctx.Done():
 		t.Fatal("runtime context should not be canceled when caller context ends")
 	default:
+	}
+}
+
+func TestSupervisorResolvesRelativeRuntimeFilesUnderOwnRuntimeRoot(t *testing.T) {
+	tempDir := t.TempDir()
+	layoutA := singbox.NewRuntimeGroupLayout(tempDir, "asia", "proxy-a")
+	layoutB := singbox.NewRuntimeGroupLayout(tempDir, "us", "proxy-b")
+	compiler := &fakeCompiler{formatted: []byte("{\n  \"ok\": true\n}\n")}
+	factoryA := &fakeFactory{box: &fakeBox{}}
+	factoryB := &fakeFactory{box: &fakeBox{}}
+	supervisorA := singbox.NewSupervisor(singbox.SupervisorOptions{
+		Compiler: compiler,
+		Factory:  factoryA,
+	})
+	supervisorB := singbox.NewSupervisor(singbox.SupervisorOptions{
+		Compiler: compiler,
+		Factory:  factoryB,
+	})
+
+	if err := supervisorA.Start(context.Background(), singbox.StartRequest{
+		Layout: layoutA,
+		Config: []byte(`{"raw":true}`),
+	}); err != nil {
+		t.Fatalf("supervisorA.Start() error = %v", err)
+	}
+	defer func() {
+		if err := supervisorA.Stop(); err != nil {
+			t.Fatalf("supervisorA.Stop() error = %v", err)
+		}
+	}()
+
+	if err := supervisorB.Start(context.Background(), singbox.StartRequest{
+		Layout: layoutB,
+		Config: []byte(`{"raw":true}`),
+	}); err != nil {
+		t.Fatalf("supervisorB.Start() error = %v", err)
+	}
+	defer func() {
+		if err := supervisorB.Stop(); err != nil {
+			t.Fatalf("supervisorB.Stop() error = %v", err)
+		}
+	}()
+
+	cachePathA := filemanager.BasePath(factoryA.ctx, "cache.db")
+	cachePathB := filemanager.BasePath(factoryB.ctx, "cache.db")
+	wantA := filepath.Join(layoutA.RootDir, "cache.db")
+	wantB := filepath.Join(layoutB.RootDir, "cache.db")
+	if cachePathA != wantA {
+		t.Fatalf("cachePathA = %q, want %q", cachePathA, wantA)
+	}
+	if cachePathB != wantB {
+		t.Fatalf("cachePathB = %q, want %q", cachePathB, wantB)
+	}
+	if cachePathA == cachePathB {
+		t.Fatalf("cache paths should be isolated, got same path %q", cachePathA)
 	}
 }
 

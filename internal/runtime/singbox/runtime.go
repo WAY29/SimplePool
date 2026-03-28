@@ -26,6 +26,7 @@ import (
 	sbLog "github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	sbjson "github.com/sagernet/sing/common/json"
+	"github.com/sagernet/sing/service/filemanager"
 )
 
 const (
@@ -643,6 +644,7 @@ func (s *Supervisor) Start(ctx context.Context, request StartRequest) error {
 		runtimeParent = context.WithoutCancel(ctx)
 	}
 	runtimeCtx, cancel := context.WithCancel(runtimeParent)
+	runtimeCtx = filemanager.WithDefault(runtimeCtx, request.Layout.RootDir, request.Layout.RootDir, os.Getuid(), os.Getgid())
 	instance, err := s.factory.New(runtimeCtx, formatted, writer)
 	if err != nil {
 		cancel()
